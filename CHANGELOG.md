@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Layered the package so dependencies point one way. `bot.py` was 444 lines
+  holding three unrelated concerns; it is now 159 and contains one class.
+  - `ui/views.py` + `ui/text.py` — presentation. Imports config and games,
+    never the bot. `pluralize_results` moved here from `feedback.py`, where a
+    Ukrainian string helper had no business living.
+  - `search_flow.py` — the search use-case (`perform_search`, `log_request`),
+    previously free functions in `bot.py` that took the bot as an argument.
+  - `search_context.py` — the in-memory message→query correlation the ✅/❌
+    handler needs, split from `feedback.py`. Two different lifetimes were
+    sharing a module: one survives restarts, one does not.
+  - `feedback.py` — vote persistence only.
+- Broke the `bot.py` ↔ `cogs/admin.py` import cycle. `admin.py` imported
+  `ParadoxBot` for a type hint while `bot.py` registers that cog, and the loop
+  was only survivable because `bot.py` imported its cogs *inside*
+  `setup_hook()`. `admin.py` now types against a `BotStatus` Protocol naming
+  the three members it actually reads, so `bot.py` imports its cogs at module
+  level like any other module.
+- Stopped importing private names across module boundaries: `bot.py` was
+  pulling `_pluralize_results`, `_search_context` and `_remember_search_context`
+  out of `feedback.py`. The replacements are public API on the modules that own
+  them.
+
+Coverage 80% → 81%, and the split makes the untested surface honest: the
+Discord-coupled parts are now visibly `search_flow.py` (21%) and `bot.py`
+(47%) instead of being averaged into one large file.
+
 ## [0.2.1] - 2026-08-21
 
 Test coverage for the command layer, a gate to keep it, and an end to the

@@ -1,188 +1,32 @@
-"""The ParadoxBot class: intents, dynamic per-game commands, and event handlers."""
+"""The ParadoxBot class: intents, cog wiring, and event handlers.
+
+Deliberately thin. Presentation lives in ui/, the search use-case in
+search_flow.py, persistence in storage-backed modules. This file should only
+ever grow a new event handler or a new cog registration.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import sqlite3
-from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
-from typing import Any
 
 import discord
-from discord import ui
 from discord.ext import commands
 
-from paradox_bot import stats
+from paradox_bot import search_context
+from paradox_bot.cogs.admin import AdminGroup
+from paradox_bot.cogs.extras import ExtrasCog
+from paradox_bot.cogs.help import HelpCog
+from paradox_bot.cogs.tools import ToolsCog
 from paradox_bot.config import settings
-from paradox_bot.feedback import (
-    FEEDBACK_EMOJIS,
-    _pluralize_results,
-    _remember_search_context,
-    _search_context,
-    record_feedback,
-)
-from paradox_bot.games import GAMES, GameInfo
-from paradox_bot.search import search_pages_async, suggest_similar_async
+from paradox_bot.feedback import FEEDBACK_EMOJIS, record_feedback
+from paradox_bot.games import GAMES
+from paradox_bot.search_flow import perform_search
 from paradox_bot.web import KeepAliveServer
 
 logger = logging.getLogger(__name__)
-
-
-def build_links_field(pages: Iterable[dict[str, Any]]) -> str:
-    """Render result links, dropping any that would overflow the field limit.
-
-    Long mod subpage titles can push a full page of results past Discord's
-    1024-character field cap, which would fail the whole message with 400.
-    """
-    lines: list[str] = []
-    used = 0
-    for page in pages:
-        line = f"[{page['title']}]({page['url']})"
-        cost = len(line) + (1 if lines else 0)  # the newline that joins it
-        if used + cost > settings.embed_field_limit:
-            break
-        lines.append(line)
-        used += cost
-    return "\n".join(lines)
-
-
-class LinksView(ui.View):
-    """Row of link buttons for a short, non-paginated list (fuzzy suggestions)."""
-
-    def __init__(self, pages: Iterable[dict[str, Any]]) -> None:
-        super().__init__(timeout=None)
-        for page in list(pages)[: settings.max_buttons]:
-            # Discord rejects button labels longer than 80 characters.
-            self.add_item(ui.Button(label=page["title"][:80], url=page["url"]))
-
-
-class _NavButton(ui.Button):
-    """A ◀/▶ button whose click runs the given async callback.
-
-    Overriding callback() as a real method, rather than assigning a function
-    to button.callback after construction, is what mypy can actually verify
-    against discord.py's Item.callback signature.
-    """
-
-    def __init__(
-        self,
-        *,
-        label: str,
-        disabled: bool,
-        on_click: Callable[[discord.Interaction], Awaitable[None]],
-    ) -> None:
-        super().__init__(label=label, style=discord.ButtonStyle.secondary, disabled=disabled)
-        self._on_click = on_click
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        await self._on_click(interaction)
-
-
-class PaginatedResultsView(ui.View):
-    """Search results: direct link buttons for the current page, plus ◀/▶
-    navigation once there's more than one page (fetched up to
-    settings.search_max_results, settings.search_result_limit per page).
-    """
-
-    def __init__(self, pages: list[dict[str, Any]], game: GameInfo, author_id: int) -> None:
-        super().__init__(timeout=settings.view_timeout_seconds)
-        self.pages = pages
-        self.game = game
-        self.author_id = author_id
-        self.page_size = settings.search_result_limit
-        self.index = 0
-        # Set by send_wiki_embed once the message exists, so on_timeout can
-        # edit the buttons out. None if sending failed.
-        self.message: discord.Message | None = None
-        self._render()
-
-    @property
-    def total_pages(self) -> int:
-        return (len(self.pages) - 1) // self.page_size + 1
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Only whoever ran the search may page through it.
-
-        Without this, anyone in the channel can advance someone else's results
-        and the message changes under them.
-        """
-        if interaction.user.id == self.author_id:
-            return True
-        await interaction.response.send_message(
-            "↔️ Це чужий пошук. Запустіть власний, щоб гортати.", ephemeral=True
-        )
-        return False
-
-    async def on_timeout(self) -> None:
-        """Disable the buttons rather than leave them looking clickable.
-
-        Discord does not retire a view's components on its own: after the
-        timeout they still render enabled and a click answers "interaction
-        failed".
-        """
-        for item in self.children:
-            if isinstance(item, ui.Button) and item.url is None:
-                item.disabled = True
-        if self.message is None:
-            return
-        try:
-            await self.message.edit(view=self)
-        except discord.HTTPException:
-            # Message deleted, or we lost access to the channel. Nothing to fix.
-            logger.debug("Could not disable timed-out view", exc_info=True)
-
-    def _current_slice(self) -> list[dict[str, Any]]:
-        start = self.index * self.page_size
-        return self.pages[start : start + self.page_size]
-
-    def _render(self) -> None:
-        self.clear_items()
-        for page in self._current_slice()[: settings.max_buttons]:
-            self.add_item(ui.Button(label=page["title"][:80], url=page["url"]))
-        if self.total_pages > 1:
-            self.add_item(
-                _NavButton(label="◀", disabled=self.index == 0, on_click=self._go_prev)
-            )
-            self.add_item(
-                _NavButton(
-                    label="▶",
-                    disabled=self.index >= self.total_pages - 1,
-                    on_click=self._go_next,
-                )
-            )
-
-    def build_embed(self) -> discord.Embed:
-        chunk = self._current_slice()
-        embed = discord.Embed(title=chunk[0]["title"], url=chunk[0]["url"], color=self.game.color)
-        embed.set_thumbnail(url=self.game.logo)
-        if chunk[0].get("image_url"):
-            embed.set_image(url=chunk[0]["image_url"])
-        # The top result of the page is already the embed title/link; listing
-        # it again here would be the third copy of the same link.
-        rest = chunk[1:]
-        if rest:
-            links_text = build_links_field(rest)
-            if links_text:
-                embed.add_field(name="🔗 Ще результати", value=links_text, inline=False)
-        page_note = (
-            f" · стор. {self.index + 1}/{self.total_pages}" if self.total_pages > 1 else ""
-        )
-        embed.set_footer(
-            text=f"{self.game.name} Wiki · {len(self.pages)} "
-            f"{_pluralize_results(len(self.pages))}{page_note}"
-        )
-        return embed
-
-    async def _go_prev(self, interaction: discord.Interaction) -> None:
-        self.index = max(0, self.index - 1)
-        self._render()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _go_next(self, interaction: discord.Interaction) -> None:
-        self.index = min(self.total_pages - 1, self.index + 1)
-        self._render()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
 class ParadoxBot(commands.Bot):
@@ -232,18 +76,13 @@ class ParadoxBot(commands.Bot):
                     commands.BucketType.user,
                 )
                 async def game_command(ctx: commands.Context, *, query: str) -> None:
-                    await send_wiki_embed(self, ctx, game_key, query)
+                    await perform_search(self, ctx, game_key, query)
 
                 return game_command
 
             self.command(name=key, help=f"Пошук у вікі {game.name}")(make_command(key))
 
     async def setup_hook(self) -> None:
-        from paradox_bot.cogs.admin import AdminGroup
-        from paradox_bot.cogs.extras import ExtrasCog
-        from paradox_bot.cogs.help import HelpCog
-        from paradox_bot.cogs.tools import ToolsCog
-
         await self.add_cog(ToolsCog(self))
         await self.add_cog(HelpCog(self))
         await self.add_cog(ExtrasCog(self))
@@ -292,7 +131,7 @@ class ParadoxBot(commands.Bot):
         vote = FEEDBACK_EMOJIS.get(str(payload.emoji))
         if vote is None:
             return
-        context = _search_context.get(payload.message_id)
+        context = search_context.get(payload.message_id)
         if context is None:
             return
 
@@ -318,127 +157,3 @@ class ParadoxBot(commands.Bot):
         except sqlite3.Error:
             logger.exception("Could not record feedback for message %s", payload.message_id)
 
-
-async def send_wiki_embed(
-    bot: commands.Bot, ctx: commands.Context, game_key: str, query: str
-) -> None:
-    """Search one game's wiki and reply with an embed plus link buttons."""
-    game = GAMES[game_key]
-
-    if len(query) > settings.max_query_length:
-        await ctx.send(f"❌ Запит задовгий (максимум {settings.max_query_length} символів).")
-        return
-
-    try:
-        pages = await search_pages_async(game_key, query, limit=settings.search_max_results)
-    except sqlite3.Error:
-        logger.exception("Database search failed for %s: %r", game_key, query)
-        await ctx.send("⚠️ Не вдалося виконати пошук. Спробуйте пізніше.")
-        return
-
-    try:
-        await asyncio.to_thread(stats.record_search, game_key, query)
-    except sqlite3.Error:
-        logger.exception("Could not record search stats for %s: %r", game_key, query)
-
-    view: ui.View | None = None
-    if pages:
-        results_view = PaginatedResultsView(pages, game, author_id=ctx.author.id)
-        embed = results_view.build_embed()
-        view = results_view
-    else:
-        embed = discord.Embed(
-            title=f"За запитом '{query}' нічого не знайдено",
-            description="Спробуйте інший запит або перевірте написання.",
-            color=game.color,
-        )
-        if game.logo:
-            embed.set_thumbnail(url=game.logo)
-        try:
-            suggestions = await suggest_similar_async(game_key, query)
-        except sqlite3.Error:
-            logger.exception("Fuzzy suggestion lookup failed for %s: %r", game_key, query)
-            suggestions = []
-        if suggestions:
-            links_text = build_links_field(suggestions)
-            if links_text:
-                embed.add_field(
-                    name="🔎 Можливо ви мали на увазі", value=links_text, inline=False
-                )
-            view = LinksView(suggestions)
-        embed.set_footer(text=f"{game.name} Wiki")
-
-    msg = await ctx.send(embed=embed, view=view) if view else await ctx.send(embed=embed)
-    if isinstance(view, PaginatedResultsView):
-        view.message = msg
-    _remember_search_context(
-        msg.id,
-        game_key=game_key,
-        query=query,
-        top_title=pages[0]["title"] if pages else None,
-        top_url=pages[0]["url"] if pages else None,
-    )
-    for emoji in FEEDBACK_EMOJIS:
-        try:
-            await msg.add_reaction(emoji)
-        except discord.HTTPException:
-            logger.warning("Could not add reaction %s", emoji, exc_info=True)
-
-    await log_request(
-        bot=bot,
-        ctx=ctx,
-        game_key=game_key,
-        query=query,
-        found=bool(pages),
-        result_count=len(pages),
-        has_image=bool(pages and pages[0].get("image_url")),
-    )
-
-
-async def log_request(
-    bot: commands.Bot,
-    ctx: commands.Context,
-    game_key: str,
-    query: str,
-    found: bool,
-    result_count: int,
-    has_image: bool,
-) -> None:
-    """Mirror a search request into the log channel. Never fails the command."""
-    logger.info(
-        "search game=%s user=%s query=%r results=%d", game_key, ctx.author.id, query, result_count
-    )
-    if settings.log_channel_id is None:
-        return
-
-    channel = bot.get_channel(settings.log_channel_id)
-    if channel is None:
-        logger.warning("Log channel %s not found or not cached", settings.log_channel_id)
-        return
-    if not isinstance(channel, discord.abc.Messageable):
-        logger.error(
-            "LOG_CHANNEL_ID %s is a %s, which can't receive messages",
-            settings.log_channel_id,
-            type(channel).__name__,
-        )
-        return
-
-    game = GAMES[game_key]
-    embed = discord.Embed(title="📄 Paradox Wiki Запит", color=game.color)
-    embed.add_field(name="**User**", value=f"<@{ctx.author.id}>", inline=False)
-    embed.add_field(
-        name="**Request**", value=f"`{settings.bot_prefix}{game_key} {query}`", inline=False
-    )
-    embed.add_field(
-        name="**Result**",
-        value=(
-            f"Знайдено: {'так' if found else 'ні'}\n"
-            f"Кількість результатів: {result_count}\n"
-            f"Картинка: {'так' if has_image else 'ні'}"
-        ),
-        inline=False,
-    )
-    try:
-        await channel.send(embed=embed)
-    except discord.DiscordException:
-        logger.exception("Failed to write to log channel %s", settings.log_channel_id)

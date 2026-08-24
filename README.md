@@ -5,7 +5,7 @@
 ![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)
 ![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?logo=discord&logoColor=white)
 ![mypy](https://img.shields.io/badge/mypy-checked-2A6DB2)
-![Coverage](https://img.shields.io/badge/coverage-80%25*-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-81%25*-brightgreen)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 Discord-бот з українським інтерфейсом для пошуку сторінок Paradox-вікі
@@ -31,12 +31,20 @@ Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py 
 | `games.py` | `GameInfo`/`GAMES` — єдине джерело правди про підтримувані ігри (ключ команди, стиль, wiki-піддомен) |
 | `search.py` | SQLite-пошук: `Pages` + `Redirects`, ранжування, fuzzy-підказки, випадкова сторінка |
 | `pdx_tools.py` | Аплоад сейву на pdx.tools, дедуп повторних завантажень |
-| `feedback.py` | ✅/❌ голоси під результатами (контекст повідомлення + збереження) |
+| `feedback.py` | ✅/❌ голоси: тільки збереження в SQLite |
 | `stats.py` | Лог пошукових запитів для `-trending` |
-| `bot.py` | `ParadoxBot`, динамічна реєстрація команд по іграх, embed-логіка, event-хендлери |
+| `bot.py` | `ParadoxBot` і тільки він: інтенти, підключення когів, event-хендлери |
+| `search_flow.py` | Сценарій пошуку: запит → відповідь → запис у stats/контекст/лог-канал |
+| `search_context.py` | Памʼять «яке повідомлення було відповіддю на який запит» (для ✅/❌) |
+| `ui/` | Презентація: `views.py` (кнопки, пагінація, embed'и), `text.py` (українські рядки) |
 | `cogs/` | Cog-и для статичних команд: `tools`, `help`, `extras` (`-random`/`-trending`/факт дня), `admin` (slash) |
 | `web.py` | Keep-alive/health HTTP-ендпоінт (aiohttp, у тому ж event loop) |
 | `storage.py` | Спільне підключення до записуваних SQLite-баз: WAL + схема |
+
+Залежності односторонні: `ui/` не знає про `bot.py`, коги не імпортують
+`ParadoxBot` (для `/admin status` є `Protocol` з трьох потрібних полів). Через
+це `bot.py` імпортує коги нормально, на рівні модуля, а не всередині
+`setup_hook()`, як доводилось робити раніше, щоб обійти цикл.
 
 Динамічні по-ігрові команди (`-eu4`, `-eu5`, …) реєструються напряму на боті,
 не через Cog — вони породжуються цик­лом по `GAMES`, а не декоратором, тож
