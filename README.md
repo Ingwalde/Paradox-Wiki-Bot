@@ -256,9 +256,27 @@ cd .runner
 ```powershell
 $a = New-ScheduledTaskAction -Execute cmd.exe -Argument '/c ".runner\run.cmd"' `
      -WorkingDirectory (Resolve-Path .runner)
-Register-ScheduledTask "ParadoxBot GitHub Runner" -Action $a `
-  -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Force
+
+# Два тригери: перший піднімає runner при вході, другий раз на 5 хвилин
+# перевіряє, чи він живий. Самого AtLogOn мало — процес, що просто вийшов,
+# лишався мертвим до наступного логіну, і деплой мовчки висів у черзі.
+# MultipleInstances IgnoreNew робить повторний тригер безпечним: поки runner
+# працює, новий запуск ігнорується.
+$triggers = @(
+  New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+  New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+)
+$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+     -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew `
+     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask "ParadoxBot GitHub Runner" -Action $a -Trigger $triggers `
+  -Settings $s -Force
 ```
+
+⚠️ **Docker Desktop → Settings → General → «Start Docker Desktop when you sign
+in»** має бути увімкнено. Без цього після ребуту движок не піднімається, і
+деплой падає на першій же команді `docker`.
 
 **Далі автоматично.** Мердж у `main` → CI ганяє лінт, типи, гейти й тести →
 збирає образ, сканує Trivy і пушить у GHCR з тегом `sha-<commit>` →
