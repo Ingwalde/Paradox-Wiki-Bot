@@ -3,9 +3,10 @@ from __future__ import annotations
 import pytest
 from discord.ext import commands
 
-from paradox_bot.bot import ParadoxBot, build_links_field
+from paradox_bot.bot import ParadoxBot
 from paradox_bot.config import settings
 from paradox_bot.games import GAMES
+from paradox_bot.ui.views import build_links_field
 
 
 def _page(title: str) -> dict[str, str]:

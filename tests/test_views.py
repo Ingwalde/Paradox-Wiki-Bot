@@ -7,8 +7,8 @@ from typing import Any
 import discord
 import pytest
 
-from paradox_bot.bot import PaginatedResultsView
 from paradox_bot.games import GameInfo
+from paradox_bot.ui.views import PaginatedResultsView
 
 GAME = GameInfo(key="test", name="Test Game", color=0, logo="", wiki_subdomain="test")
 

@@ -7,14 +7,37 @@ Gated by Discord's own default_permissions(administrator=True) on the group
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Protocol
 
 import discord
 from discord import app_commands
 
 from paradox_bot import feedback, search
-from paradox_bot.bot import ParadoxBot
 from paradox_bot.games import GAMES
+
+
+class BotStatus(Protocol):
+    """The three things /admin status reads off the bot.
+
+    A Protocol rather than `ParadoxBot`: importing the concrete class here made
+    admin.py depend on bot.py while bot.py registers this cog, and the cycle was
+    only survivable because bot.py imported its cogs inside setup_hook(). Typing
+    against what is actually used breaks the loop, and lets the tests pass a
+    plain stub instead of constructing a real bot.
+    """
+
+    started_at: datetime
+
+    # Properties, not plain attributes: discord.Client exposes both as
+    # read-only, and a Protocol declaring them settable would reject the real
+    # bot.
+    @property
+    def guilds(self) -> Sequence[object]: ...
+
+    @property
+    def latency(self) -> float: ...
 
 
 def _format_uptime(delta_seconds: float) -> str:
@@ -29,7 +52,7 @@ def _format_uptime(delta_seconds: float) -> str:
 
 
 class AdminGroup(app_commands.Group):
-    def __init__(self, bot: ParadoxBot) -> None:
+    def __init__(self, bot: BotStatus) -> None:
         super().__init__(
             name="admin",
             description="Адмін-команди",

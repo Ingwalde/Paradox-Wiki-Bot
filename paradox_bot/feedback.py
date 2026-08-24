@@ -1,4 +1,9 @@
-"""Search-result feedback: in-memory reaction context plus persisted votes."""
+"""Persisted ✅/❌ votes on search results.
+
+Only persistence. The in-memory message->query correlation the reaction
+handler needs lives in search_context.py, and the Ukrainian pluralizer it
+used to carry is presentation -- it lives in ui/text.py.
+"""
 
 from __future__ import annotations
 
@@ -9,29 +14,6 @@ from paradox_bot import storage
 from paradox_bot.config import settings
 
 FEEDBACK_EMOJIS = {"✅": "up", "❌": "down"}
-
-# Correlates a search-result message id back to what was searched, so the
-# ✅/❌ reaction handler can log which query/result the feedback is about.
-# In-memory and capped: feedback on a message from before the last restart,
-# or the oldest entries once the cap is hit, is simply not attributable.
-MAX_SEARCH_CONTEXT = 1000
-_search_context: dict[int, dict[str, Any]] = {}
-
-
-def _remember_search_context(message_id: int, **context: Any) -> None:
-    _search_context[message_id] = context
-    while len(_search_context) > MAX_SEARCH_CONTEXT:
-        _search_context.pop(next(iter(_search_context)))
-
-
-def _pluralize_results(count: int) -> str:
-    """Ukrainian plural of 'результат' for the given count."""
-    if count % 10 == 1 and count % 100 != 11:
-        return "результат"
-    if 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        return "результати"
-    return "результатів"
-
 
 def record_feedback(
     user_id: str,
