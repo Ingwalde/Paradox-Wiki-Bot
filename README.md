@@ -254,14 +254,22 @@ cd .runner
 до нього не достукається.
 
 ```powershell
-$a = New-ScheduledTaskAction -Execute cmd.exe -Argument '/c ".runner\run.cmd"' `
-     -WorkingDirectory (Resolve-Path .runner)
+# Виконувати з кореня проєкту (попередній блок лишає вас у .runner — поверніться).
+# Шлях до run.cmd — абсолютний: -Argument резолвиться відносно
+# -WorkingDirectory, тож відносний '.runner\run.cmd' дав би
+# <проєкт>\.runner\.runner\run.cmd, і задача падала б на кожному тригері.
+$runnerDir = (Resolve-Path .runner).Path
+$a = New-ScheduledTaskAction -Execute cmd.exe `
+     -Argument "/c `"$runnerDir\run.cmd`"" -WorkingDirectory $runnerDir
 
 # Два тригери: перший піднімає runner при вході, другий раз на 5 хвилин
 # перевіряє, чи він живий. Самого AtLogOn мало — процес, що просто вийшов,
 # лишався мертвим до наступного логіну, і деплой мовчки висів у черзі.
 # MultipleInstances IgnoreNew робить повторний тригер безпечним: поки runner
-# працює, новий запуск ігнорується.
+# працює, новий запуск ігнорується. Побічний ефект: поки все справно,
+# LastTaskResult дорівнює 0x800710E0 («екземпляр уже виконується»), тож
+# судити про здоровʼя за цим кодом не можна — дивіться State і статус
+# runner'а на GitHub.
 $triggers = @(
   New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
@@ -275,8 +283,12 @@ Register-ScheduledTask "ParadoxBot GitHub Runner" -Action $a -Trigger $triggers 
 ```
 
 ⚠️ **Docker Desktop → Settings → General → «Start Docker Desktop when you sign
-in»** має бути увімкнено. Без цього після ребуту движок не піднімається, і
-деплой падає на першій же команді `docker`.
+in»** має бути увімкнено — інакше після ребуту движок не піднімається взагалі.
+
+Але сама галочка проблему не закриває: runner і движок стартують одночасно, і
+runner виграє гонку — деплой, що чекав у черзі під час ребуту, дійде до
+`docker compose pull` раніше, ніж демон буде готовий. Тому `scripts/deploy.sh`
+чекає на движок до 3 хвилин, перш ніж щось робити.
 
 **Далі автоматично.** Мердж у `main` → CI ганяє лінт, типи, гейти й тести →
 збирає образ, сканує Trivy і пушить у GHCR з тегом `sha-<commit>` →
