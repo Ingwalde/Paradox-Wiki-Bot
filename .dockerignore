@@ -12,6 +12,13 @@ __pycache__
 .pytest_cache
 .ruff_cache
 .mypy_cache
+# Trivy scans the built image *before* the push step rebuilds from this same
+# context, and the action leaves its vulnerability DB in .cache/trivy. Without
+# this the pushed image carries a few hundred MB the scanned image never had --
+# so the artifact that ships is not the artifact that was scanned, and pulling
+# it fails outright: "write /app/.cache/trivy/db/trivy.db: read-only file
+# system".
+.cache
 .coverage
 .coverage.*
 coverage.xml
