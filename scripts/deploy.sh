@@ -16,8 +16,29 @@ set -euo pipefail
 IMAGE="ghcr.io/ingwalde/paradox-wiki-bot:${IMAGE_TAG}"
 CONTAINER="paradox-wiki-bot"
 HEALTH_TIMEOUT_SECONDS=90
+DOCKER_TIMEOUT_SECONDS=180
 
 fail() { echo "::error::$*"; exit 1; }
+
+# The runner and the Docker engine both start at sign-in, and the runner wins:
+# a deploy queued over a reboot reaches `docker compose pull` while the daemon
+# is still coming up, and dies on "cannot find the file specified". Enabling
+# Docker's autostart does not fix that -- it only guarantees the engine is
+# starting, not that it has finished. So wait for it.
+wait_for_docker() {
+  local waited=0
+  until docker info >/dev/null 2>&1; do
+    [ "$waited" -ge "$DOCKER_TIMEOUT_SECONDS" ] &&
+      fail "Docker engine not reachable after ${DOCKER_TIMEOUT_SECONDS}s. Is Docker Desktop running?"
+    [ "$waited" -eq 0 ] && echo "Waiting for the Docker engine..."
+    sleep 5
+    waited=$((waited + 5))
+  done
+  [ "$waited" -gt 0 ] && echo "Docker engine ready after ${waited}s."
+  return 0
+}
+
+wait_for_docker
 
 [ -d "$DEPLOY_DIR" ] || fail "$DEPLOY_DIR does not exist. Create it and put .env there first."
 [ -f "$DEPLOY_DIR/.env" ] || fail "No .env in $DEPLOY_DIR. The bot cannot start without TOKEN."
