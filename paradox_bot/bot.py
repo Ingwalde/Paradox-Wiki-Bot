@@ -147,6 +147,7 @@ class ParadoxBot(commands.Bot):
         try:
             await asyncio.to_thread(
                 record_feedback,
+                str(payload.message_id),
                 str(payload.user_id),
                 context["game_key"],
                 context["query"],

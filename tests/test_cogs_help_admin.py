@@ -106,8 +106,8 @@ def test_feedback_reports_when_empty(interaction: FakeInteraction, monkeypatch, 
 
 def test_feedback_lists_votes_newest_first(interaction: FakeInteraction, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "feedback_db_path", tmp_path / "feedback.db")
-    feedback.record_feedback("1", "eu4", "absolutism", "up", "Absolutism", "u")
-    feedback.record_feedback("2", "hoi4", "germany", "down", None, None)
+    feedback.record_feedback("msg-1", "1", "eu4", "absolutism", "up", "Absolutism", "u")
+    feedback.record_feedback("msg-2", "2", "hoi4", "germany", "down", None, None)
     group = AdminGroup(bot=FakeBot())
 
     asyncio.run(group.feedback_cmd.callback(group, interaction))
@@ -125,7 +125,7 @@ def test_feedback_lists_votes_newest_first(interaction: FakeInteraction, monkeyp
 def test_feedback_respects_the_limit(interaction: FakeInteraction, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "feedback_db_path", tmp_path / "feedback.db")
     for i in range(5):
-        feedback.record_feedback("1", "eu4", f"query {i}", "up", "T", "u")
+        feedback.record_feedback(f"msg-{i}", "1", "eu4", f"query {i}", "up", "T", "u")
     group = AdminGroup(bot=FakeBot())
 
     asyncio.run(group.feedback_cmd.callback(group, interaction, limit=2))

@@ -8,6 +8,7 @@ three files the bot writes to.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 from paradox_bot.config import settings
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS Uploads (
 FEEDBACK_SCHEMA = """
 CREATE TABLE IF NOT EXISTS Feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id TEXT,
     user_id TEXT,
     game_key TEXT,
     query TEXT,
@@ -54,7 +56,11 @@ def reset_schema_cache() -> None:
     _schema_applied.clear()
 
 
-def connect(path: Path, schema: str) -> sqlite3.Connection:
+def connect(
+    path: Path,
+    schema: str,
+    migrate: Callable[[sqlite3.Connection], None] | None = None,
+) -> sqlite3.Connection:
     """Open a writable database with WAL enabled and its schema in place.
 
     WAL matters for more than concurrency here: the container is stopped with
@@ -63,6 +69,12 @@ def connect(path: Path, schema: str) -> sqlite3.Connection:
     `synchronous=NORMAL` is the standard pairing — durable across a process
     crash, which is the failure being defended against, while not paying an
     fsync per transaction.
+
+    `migrate` runs once per file per process, straight after the schema, for
+    changes `CREATE TABLE IF NOT EXISTS` cannot make: on a database that
+    already has the table the DDL above is a no-op, so a column or index added
+    after that file first shipped has to be applied explicitly. It must be
+    safe to run against a table that is already up to date.
 
     Blocking; call via asyncio.to_thread.
     """
@@ -76,6 +88,8 @@ def connect(path: Path, schema: str) -> sqlite3.Connection:
         resolved = Path(path).resolve()
         if resolved not in _schema_applied:
             conn.executescript(schema)
+            if migrate is not None:
+                migrate(conn)
             conn.commit()
             _schema_applied.add(resolved)
     except Exception:
