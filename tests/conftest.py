@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -55,7 +56,13 @@ def game_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 class FakeMessage:
     """Stands in for a sent discord.Message: records what it was sent with."""
 
+    # search_flow keys its per-message search context off message.id, so a
+    # fake message needs one too. Only uniqueness matters, not the shape of a
+    # real Discord snowflake.
+    _next_id = itertools.count(1)
+
     def __init__(self, content: str | None, embed: object, view: object) -> None:
+        self.id = next(FakeMessage._next_id)
         self.content = content
         self.embed = embed
         self.view = view

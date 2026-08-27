@@ -6,7 +6,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `-tools` no longer gzips a save that is already compressed. `prepare_save_payload`
+  recognised zip archives and passed them through, but everything else was
+  gzipped unconditionally — so a `.gz` upload went to pdx.tools as a gzip stream
+  that unpacks into another gzip stream, sent as `Content-Type: application/gzip`.
+  It now checks for the gzip magic bytes as well.
+
 ### Changed
+- One ✅/❌ vote per user per result message. `Feedback` gained a `message_id`
+  column and a unique index on `(message_id, user_id)`, and `record_feedback`
+  upserts: toggling a reaction off and on no longer writes a row per toggle, and
+  changing ✅ to ❌ replaces the earlier vote instead of recording both. Anyone
+  could previously inflate `/admin feedback` — and any measurement of search
+  quality built on that table — from a single message.
+  - `storage.connect()` takes an optional `migrate` callable for exactly this:
+    `CREATE TABLE IF NOT EXISTS` does nothing to a database that already has the
+    table, so a column added after the file first shipped has to be applied
+    explicitly. Rows written before the column existed keep `message_id` NULL,
+    which SQLite treats as distinct in a unique index — they stay
+    un-deduplicated rather than colliding.
+  - `recent_feedback` orders by `timestamp` before `id`, so a changed vote
+    surfaces as recent rather than staying in its original position.
 - Layered the package so dependencies point one way. `bot.py` was 444 lines
   holding three unrelated concerns; it is now 159 and contains one class.
   - `ui/views.py` + `ui/text.py` — presentation. Imports config and games,
@@ -32,6 +53,13 @@ All notable changes to this project will be documented in this file.
 Coverage 80% → 81%, and the split makes the untested surface honest: the
 Discord-coupled parts are now visibly `search_flow.py` (21%) and `bot.py`
 (47%) instead of being averaged into one large file.
+
+### Added
+- Tests for `search_flow.py`, 21% → 99%. Every branch of `perform_search` and
+  `log_request` is reachable without a gateway connection — results found and
+  not found, fuzzy suggestions, an over-long query, a failing search, stats
+  write, suggestion lookup, reaction and log-channel send — and none of it was
+  covered. Coverage 81% → 91%, gate 78% → 88%.
 
 ## [0.2.1] - 2026-08-21
 
