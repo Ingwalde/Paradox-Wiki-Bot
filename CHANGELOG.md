@@ -14,6 +14,16 @@ All notable changes to this project will be documented in this file.
   It now checks for the gzip magic bytes as well.
 
 ### Changed
+- `ROADMAP.md` is now sequenced rather than enumerated. The items were a flat
+  list of five plus "дрібниці"; they are now six stages ordered by what blocks
+  what, with the two dependencies that actually constrain the order written
+  down: the normalised-title column has to land before slash-command
+  autocomplete (which queries on every keystroke), and metrics have to land
+  before FTS5 (search is 4–14 ms today, so there is nothing to optimise
+  against yet). Adds the operational items this release's review turned up —
+  SearchLog retention, the health endpoint's blindness to gateway state,
+  `tree.sync()` on every startup, unpinned runtime dependencies, and CI
+  building the image twice so the scanned artifact is not the pushed one.
 - One ✅/❌ vote per user per result message. `Feedback` gained a `message_id`
   column and a unique index on `(message_id, user_id)`, and `record_feedback`
   upserts: toggling a reaction off and on no longer writes a row per toggle, and
