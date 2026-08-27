@@ -15,6 +15,7 @@ from paradox_bot.config import settings
 logger = logging.getLogger(__name__)
 
 ZIP_MAGIC = b"PK\x03\x04"
+GZIP_MAGIC = b"\x1f\x8b"
 
 
 class PdxToolsError(Exception):
@@ -39,9 +40,13 @@ def _is_duplicate_save_error(body: str) -> bool:
 def prepare_save_payload(raw: bytes) -> bytes:
     """Return the save in a form pdx.tools accepts.
 
-    Zip saves go up untouched; anything else must be gzip-compatible.
+    Saves that are already compressed go up untouched; only a plain,
+    uncompressed save is gzipped here. Checking for gzip as well as zip
+    matters: compressing a .gz upload again produced a gzip stream that
+    unpacks into another gzip stream, which is not a save file, and it was
+    still sent as Content-Type: application/gzip.
     """
-    if raw.startswith(ZIP_MAGIC):
+    if raw.startswith(ZIP_MAGIC) or raw.startswith(GZIP_MAGIC):
         return raw
     return gzip.compress(raw)
 

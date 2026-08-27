@@ -42,6 +42,18 @@ def test_prepare_save_payload_gzips_non_zip() -> None:
     assert gzip.decompress(payload) == raw
 
 
+def test_prepare_save_payload_passes_gzip_through() -> None:
+    """An already-gzipped upload must not be gzipped a second time.
+
+    Compressing it again yielded a stream that unpacks into another gzip
+    stream rather than into the save, which pdx.tools cannot read.
+    """
+    save = b"plain text save, not a zip"
+    raw = gzip.compress(save)
+    assert pdx_tools.prepare_save_payload(raw) == raw
+    assert gzip.decompress(pdx_tools.prepare_save_payload(raw)) == save
+
+
 def test_extract_save_url_valid_json() -> None:
     url = pdx_tools._extract_save_url(200, '{"save_id": "abc123"}')
     assert url == settings.pdx_tools_save_url.format(save_id="abc123")
