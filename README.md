@@ -9,15 +9,17 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 Discord-бот з українським інтерфейсом для пошуку сторінок Paradox-вікі
-(контент вікі переважно англійський). Дані лежать локально в SQLite, тож пошук
-не залежить від доступності вікі й відповідає за частки мілісекунди.
+(контент вікі переважно англійський). Дані лежать локально в PostgreSQL, тож
+пошук не залежить від доступності вікі й відповідає за частки мілісекунди.
 
 ```text
 Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py ─┐
-                                          │                                   ├─ databases/<game>.db (SQLite)
-                                          └→ paradox_bot/pdx_tools.py ────────┘         ↑
-                                                     │                    scripts/import_wiki.py
-                                                     └→ https://pdx.tools/api/saves     (MediaWiki API)
+                                          │                                   ├─ PostgreSQL
+                                          └→ paradox_bot/pdx_tools.py ────────┘   pages / redirects (сід)
+                                                     │                            uploads / feedback / search_log
+                                                     └→ https://pdx.tools/api/saves
+                                                              ↑
+                             databases/seed.sql.gz  ←  scripts/dump_seed.py  ←  scripts/import_wiki.py (MediaWiki API)
 ```
 
 ## Architecture
@@ -29,17 +31,18 @@ Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py 
 |---|---|
 | `config.py` | `Settings` (типізований dataclass, читається з env один раз) + логування |
 | `games.py` | `GameInfo`/`GAMES` — єдине джерело правди про підтримувані ігри (ключ команди, стиль, wiki-піддомен) |
-| `search.py` | SQLite-пошук: `Pages` + `Redirects`, ранжування, fuzzy-підказки, випадкова сторінка |
+| `search.py` | Пошук у Postgres: `pages` + `redirects`, ранжування (сирий SQL), fuzzy-підказки, випадкова сторінка |
 | `pdx_tools.py` | Аплоад сейву на pdx.tools, дедуп повторних завантажень |
-| `feedback.py` | ✅/❌ голоси: тільки збереження в SQLite |
+| `feedback.py` | ✅/❌ голоси: тільки збереження в Postgres (ON CONFLICT-дедуп) |
 | `stats.py` | Лог пошукових запитів для `-trending` |
 | `bot.py` | `ParadoxBot` і тільки він: інтенти, підключення когів, event-хендлери |
 | `search_flow.py` | Сценарій пошуку: запит → відповідь → запис у stats/контекст/лог-канал |
 | `search_context.py` | Памʼять «яке повідомлення було відповіддю на який запит» (для ✅/❌) |
 | `ui/` | Презентація: `views.py` (кнопки, пагінація, embed'и), `text.py` (українські рядки) |
 | `cogs/` | Cog-и для статичних команд: `tools`, `help`, `extras` (`-random`/`-trending`/факт дня), `admin` (slash) |
-| `web.py` | Keep-alive/health HTTP-ендпоінт (aiohttp, у тому ж event loop) |
-| `storage.py` | Спільне підключення до записуваних SQLite-баз: WAL + схема |
+| `web.py` | Keep-alive/health HTTP-ендпоінт (aiohttp, у тому ж event loop); `/health` = 503, коли БД недоступна |
+| `storage.py` | Async-двигун SQLAlchemy, ORM-моделі, `StorageError`, `check_db`/`wait_for_db` |
+| `db_migrate.py` | Застосування Alembic-міграцій при старті бота |
 
 Залежності односторонні: `ui/` не знає про `bot.py`, коги не імпортують
 `ParadoxBot` (для `/admin status` є `Protocol` з трьох потрібних полів). Через
@@ -76,7 +79,12 @@ python main.py
 потім `-eu4 holy roman empire`.
 
 Бот піднімає keep-alive HTTP-ендпоінт на `PORT` (за замовчуванням 8080):
-`GET /` і `GET /health` повертають `200 I'm alive!`.
+`GET /` і `GET /health` повертають `200 I'm alive!`, коли БД відповідає, і
+`503`, коли дешевий `SELECT 1` не проходить.
+
+Локально бот очікує доступний PostgreSQL (див. `.env.example`); найпростіше —
+`docker compose up`, який піднімає і базу, і бота. При старті бот чекає на базу
+(з ретраями) і застосовує Alembic-міграції (`alembic upgrade head`).
 
 ## Де взяти токени і ключі
 
@@ -129,9 +137,10 @@ ID тестового сервера — з ним `/admin`-команди си�
 ### 6. API вікі — ключ не потрібен
 
 MediaWiki Action API (`https://<game>.paradoxwikis.com/api.php`) анонімний.
-`scripts/import_wiki.py` ним і користується для наповнення `databases/<game>.db`
-(`python scripts/import_wiki.py eu5`, реюзабельно для будь-якої гри з
-`paradox_bot/games.py`).
+`scripts/import_wiki.py` ним і користується для наповнення таблиць `pages` /
+`redirects` у Postgres (`python scripts/import_wiki.py eu5`, реюзабельно для
+будь-якої гри з `paradox_bot/games.py`). Після оновлення перегенеруйте
+`databases/seed.sql.gz` через `python scripts/dump_seed.py`.
 
 ## Якщо не працює
 
@@ -155,8 +164,8 @@ MediaWiki Action API (`https://<game>.paradoxwikis.com/api.php`) анонімн�
 |---|---|---|
 | `TOKEN` | так | Токен Discord-бота |
 | `LOG_CHANNEL_ID` | ні | Канал, куди дзеркаляться запити |
-| `DB_DIR` | ні | Каталог з `eu4.db`, `eu5.db`, … (типово `databases`) |
-| `DATA_DIR` | ні | Де лежать записувані бази (аплоади, фідбек, статистика); у Docker — том |
+| `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | так | Параметри підключення до Postgres (спільні з контейнером бази) |
+| `DATABASE_URL` | ні | Повний URL asyncpg; перекриває `POSTGRES_*` (для керованої бази) |
 | `BOT_PREFIX` | ні | Префікс команд (типово `-`) |
 | `PORT` | ні | Порт keep-alive/health (типово 8080) |
 | `DEV_GUILD_ID` | ні | Сервер для миттєвої синхронізації `/admin` |
@@ -166,20 +175,43 @@ MediaWiki Action API (`https://<game>.paradoxwikis.com/api.php`) анонімн�
 
 ## Дані
 
-`databases/<game>.db`: `Pages(title, url, image_url, lang)` та
-`Redirects(redirect_title, redirect_url, target_page_url)` — обидві таблиці
-беруть участь у пошуку (ранжування: точний збіг → з початку → входження
-всередині), плюс fuzzy-підказки на порожньому результаті.
+Одна база PostgreSQL тримає і read-only ігрові дані, і записуваний стан:
 
-Наповнюються через `python scripts/import_wiki.py <гра>` (MediaWiki Action
-API, без ключа). Безпечно перезапускати — таблиці перебудовуються з нуля.
+- **Ігрові дані** (сід): `pages(game_key, title, url, image_url, lang)` та
+  `redirects(game_key, redirect_title, redirect_url, target_page_url)` — обидві
+  таблиці беруть участь у пошуку (ранжування: точний збіг → з початку →
+  входження всередині), плюс fuzzy-підказки на порожньому результаті. Усі ігри
+  живуть в одних таблицях, розрізняються за `game_key` (у SQLite кожна гра мала
+  свій файл).
+- **Записуваний стан**: `uploads`, `feedback`, `search_log` — керуються
+  Alembic-міграціями. Плюс порожня `api_cache` — заділ під живий шлях до
+  MediaWiki у наступній версії.
+
+Ігрові дані наповнюються через `python scripts/import_wiki.py <гра>` (MediaWiki
+Action API, без ключа; один `DELETE` + вставка на гру в одній транзакції,
+безпечно перезапускати). Committed-сід `databases/seed.sql.gz` генерується з
+`python scripts/dump_seed.py` (через `pg_dump`) і підхоплюється офіційним
+образом Postgres через `docker-entrypoint-initdb.d` на першому старті чистого
+тому.
 
 Пошук сканує таблиці цілком: `LIKE '%запит%'` має провідний `%`, який жоден
-B-tree індекс обслужити не може. На ~2000 рядків це ≈3 мс у робочому потоці.
-Плани щодо індексованої нормалізованої колонки — у [ROADMAP.md](ROADMAP.md).
+B-tree індекс обслужити не може. На ~5000 рядків це залишається дешевим.
+Плани щодо нормалізованого індексу та повнотекстового пошуку (`tsvector` /
+`pg_trgm`) — у [ROADMAP.md](ROADMAP.md).
 
 ⚠️ Колонка `lang` недостовірна (значна частина рядків позначена як
 «Українська», хоча веде на англійські сторінки) і пошуком не читається.
+
+### Бекапи
+
+Стан більше не файли, які можна скопіювати, — бекап це `pg_dump`:
+
+```bash
+docker compose exec postgres pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" \
+  | gzip > backup-$(date +%F).sql.gz
+```
+
+Відновлення — `gunzip -c backup.sql.gz | docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"`.
 
 ## Тестування та якість
 
@@ -303,7 +335,7 @@ healthcheck стане `healthy` — інакше падає з останнім
 
 **Увімкнення деплою.** Дві змінні репозиторію (Settings → Secrets and variables
 → Actions → **Variables**): `DEPLOY_ENABLED=true` і `DEPLOY_DIR` — шлях до
-каталогу з `.env`, `data/` і `logs/`. Без `DEPLOY_ENABLED` джоб пропускається;
+каталогу з `.env` і `logs/`. Без `DEPLOY_ENABLED` джоб пропускається;
 інакше на кожному пуші в `main` він висів би в черзі без runner'а й слав листа
 про помилку. Змінні, а не секрети, бо в `if:` на рівні джоба GitHub дає лише
 `github`/`needs`/`vars`/`inputs`.
@@ -314,9 +346,12 @@ healthcheck стане `healthy` — інакше падає з останнім
 копії workflow у default-гілці, а PR із форку не може пушити в `main` — отже
 чужий код тут виконатися не може.
 
-**Дані.** `DATA_DIR=/app/data` монтується томом, тож `pdx_tools.db`,
-`feedback.db` і `stats.db` переживають редеплой. Ігрові бази в `databases/` —
-навпаки, read-only контент усередині образу.
+**Дані.** Весь стан живе в контейнері Postgres на іменованому томі `pgdata`,
+тож аплоади, фідбек і статистика переживають редеплой бота. Ігрові дані
+сідуються з `databases/seed.sql.gz` на першому старті чистого тому; далі
+оновлюються `scripts/import_wiki.py`. Бекап — `pg_dump` (див. розділ «Дані»),
+а не копіювання файлів. Порт Postgres назовні не публікується — бот ходить до
+бази внутрішньою compose-мережею.
 
 **Локально:** `docker compose up --build`.
 

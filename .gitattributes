@@ -1,6 +1,6 @@
-# The game databases are tracked binary content. Marking them explicitly keeps
-# git from attempting text normalisation or a useless diff on 1.5 MB of SQLite.
-*.db binary
+# The seed dump is tracked binary content. Marking it explicitly keeps git from
+# attempting text normalisation or a useless diff on the compressed game data.
+databases/seed.sql.gz binary
 
 # Shell scripts must stay LF so they run on the Linux VM regardless of the
 # committing host's platform.

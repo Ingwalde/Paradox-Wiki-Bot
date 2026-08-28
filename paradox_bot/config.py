@@ -96,14 +96,13 @@ class Settings:
     """Bot configuration read once from the environment at startup.
 
     Not frozen: tests monkeypatch individual fields on the single shared
-    `settings` instance (e.g. `monkeypatch.setattr(settings, "db_dir", x)`).
+    `settings` instance (e.g. `monkeypatch.setattr(settings, "log_channel_id", x)`).
     Every module reads through that one instance, so the mutation is visible
     everywhere regardless of how each module imported it.
     """
 
     token: str = ""
     log_channel_id: int | None = None
-    db_dir: Path = field(default_factory=lambda: Path("databases"))
     bot_prefix: str = "-"
     server_port: int = 8080
     dev_guild_id: int | None = None
@@ -124,7 +123,6 @@ class Settings:
     search_max_results: int = 35
     max_buttons: int = 5
     max_query_length: int = 100
-    db_timeout_seconds: float = 5.0
 
     # Discord rejects an embed field value longer than this.
     embed_field_limit: int = 1024
@@ -135,9 +133,6 @@ class Settings:
     upload_cooldown_uses: int = 1
     upload_cooldown_seconds: float = 60.0
 
-    # Runtime state (uploads, feedback, search stats) now lives in Postgres, not
-    # in files under data_dir; data_dir remains for the logs volume.
-    data_dir: Path = field(default_factory=lambda: Path("."))
     upload_wait_seconds: float = 60.0
     max_save_bytes: int = 25 * 1024 * 1024
 
@@ -162,13 +157,10 @@ class Settings:
             os.getenv("DAILY_FACT_CHANNEL_ID", ""), name="DAILY_FACT_CHANNEL_ID"
         )
 
-        data_dir = Path(os.getenv("DATA_DIR", "."))
-
         return cls(
             token=os.getenv("TOKEN", "").strip(),
             log_channel_id=log_channel_id,
             database_url=_build_database_url(),
-            data_dir=data_dir,
             bot_prefix=os.getenv("BOT_PREFIX", "-"),
             server_port=port if port is not None else 8080,
             dev_guild_id=dev_guild_id,

@@ -27,15 +27,9 @@ tests
 .vscode
 .idea
 .DS_Store
-data
 logs
 temp
 *.pid
-# Runtime state only. databases/*.db are read-only game content and must ship
-# in the image, so this deliberately does not exclude *.db wholesale.
-pdx_tools.db
-feedback.db
-stats.db
 *.log
 *.zip
 *.tar

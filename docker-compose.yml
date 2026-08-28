@@ -45,16 +45,12 @@ services:
     environment:
       # Reach Postgres by its compose service name over the internal network.
       POSTGRES_HOST: postgres
-      # Logs live on the volume below, not in the image layer, so they survive
-      # a redeploy.
-      DATA_DIR: /app/data
     depends_on:
       postgres:
         condition: service_healthy
     ports:
       - "8080:8080"  # keep-alive/health, for host-side uptime monitoring
     volumes:
-      - ./data:/app/data
       - ./logs:/app/logs
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]

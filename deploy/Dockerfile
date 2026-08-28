@@ -17,8 +17,7 @@ RUN python -m pip install --upgrade pip \
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    DATA_DIR=/app/data
+    PYTHONUNBUFFERED=1
 
 # Apply Debian security updates on top of the base image. python:3.13-slim is
 # rebuilt on its own schedule, so between rebuilds it ships OS packages with
@@ -50,15 +49,13 @@ RUN python -m pip install --no-cache-dir --upgrade "setuptools>=78.1.1" \
 
 COPY . .
 
-# data/ holds the runtime SQLite files (uploads, feedback, stats) and is a
-# mounted volume in docker-compose.yml. The game databases in databases/ are
-# read-only content baked into the image and rebuilt by scripts/import_wiki.py.
-# Fixed uid/gid 1000, not a system user: data/ and logs/ are bind-mounted from
-# the host, and a bind mount keeps the host's ownership. A system account gets
-# an arbitrary uid in the 100s, which then cannot write to a directory owned by
+# Writable state lives in Postgres now; only logs/ is written on the host.
+# Fixed uid/gid 1000, not a system user: logs/ is bind-mounted from the host,
+# and a bind mount keeps the host's ownership. A system account gets an
+# arbitrary uid in the 100s, which then cannot write to a directory owned by
 # the host's first non-root user — uid 1000 on Ubuntu, which is what Oracle
 # Cloud and Hetzner images ship. Matching it means the mount just works.
-RUN mkdir -p data logs \
+RUN mkdir -p logs \
     && addgroup --gid 1000 botuser \
     && adduser --uid 1000 --gid 1000 --disabled-password --gecos "" botuser \
     && chown -R botuser:botuser /app

@@ -1,6 +1,6 @@
 [project]
 name = "paradox-wiki-bot"
-version = "0.2.1"
+version = "0.3.0"
 description = "Discord bot that searches Ukrainian Paradox game wikis"
 authors = [{ name = "Ingwalde" }]
 license = { file = "LICENSE" }
