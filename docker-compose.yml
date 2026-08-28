@@ -14,6 +14,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Seed on first boot only: the official image runs everything in
+      # docker-entrypoint-initdb.d against an empty data directory, and it
+      # understands .sql.gz. On an existing volume this is ignored. Regenerate
+      # the dump with scripts/dump_seed.py.
+      - ./databases/seed.sql.gz:/docker-entrypoint-initdb.d/seed.sql.gz:ro
     # Internal only — the bot reaches Postgres over the compose network. The
     # port is deliberately not published to the host.
     expose:

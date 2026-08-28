@@ -1,15 +1,19 @@
-"""SQLite-backed wiki page search: direct titles plus redirects, ranked."""
+"""PostgreSQL-backed wiki page search: direct titles plus redirects, ranked.
+
+The ranking query is deliberately raw SQL (sqlalchemy.text): it does relevance
+ranking across a UNION of pages and redirects that the ORM would only obscure.
+The CRUD around the writable tables uses the ORM; this does not.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import difflib
-import sqlite3
-from pathlib import Path
 from typing import Any
 
+from sqlalchemy import func, select, text
+
 from paradox_bot.config import settings
-from paradox_bot.games import GAMES
+from paradox_bot.storage import Pages, Redirects, session
 
 FUZZY_MATCH_LIMIT = 5
 FUZZY_MATCH_CUTOFF = 0.6
@@ -27,65 +31,56 @@ def escape_like(text: str) -> str:
     return text
 
 
-def db_path(game_key: str) -> Path:
-    """Resolve the SQLite file for a game.
-
-    Raises:
-        KeyError: If the key is not one of the configured games. Callers only
-            ever pass keys from GAMES, so this is a defensive assertion that
-            no user input can reach the filesystem.
-    """
-    if game_key not in GAMES:
-        raise KeyError(game_key)
-    return settings.db_dir / f"{game_key}.db"
-
-
 # Redirects.target_page_url may carry a #section fragment (e.g. a patch-notes
 # anchor); the base page it points at is everything before that fragment.
-_STRIP_FRAGMENT_SQL = (
-    "CASE WHEN instr(target_page_url, '#') > 0 "
-    "THEN substr(target_page_url, 1, instr(target_page_url, '#') - 1) "
-    "ELSE target_page_url END"
-)
+# split_part is Postgres' one-call replacement for SQLite's instr()/substr().
+_STRIP_FRAGMENT_SQL = "split_part(r.target_page_url, '#', 1)"
 
-_SEARCH_SQL = f"""
+# DISTINCT ON (title) collapses the several redirects that can point at one page
+# (each with a different #fragment) down to one row -- Postgres rejects the bare
+# columns SQLite allowed under GROUP BY, so the best-ranked row per title is
+# picked by the inner ORDER BY and the final ordering is applied outside.
+_SEARCH_SQL = text(
+    f"""
 WITH matches AS (
     SELECT
         title, url, image_url,
         CASE
-            WHEN LOWER(REPLACE(title, '_', ' ')) = :exact THEN 0
-            WHEN LOWER(REPLACE(title, '_', ' ')) LIKE :prefix ESCAPE '\\' THEN 1
+            WHEN lower(replace(title, '_', ' ')) = :exact THEN 0
+            WHEN lower(replace(title, '_', ' ')) LIKE :prefix ESCAPE '\\' THEN 1
             ELSE 2
         END AS rank
-    FROM Pages
-    WHERE LOWER(REPLACE(title, '_', ' ')) LIKE :contains ESCAPE '\\'
+    FROM pages
+    WHERE game_key = :game
+      AND lower(replace(title, '_', ' ')) LIKE :contains ESCAPE '\\'
 
     UNION ALL
 
     SELECT
         p.title, r.target_page_url AS url, p.image_url,
         CASE
-            WHEN LOWER(REPLACE(r.redirect_title, '_', ' ')) = :exact THEN 0
-            WHEN LOWER(REPLACE(r.redirect_title, '_', ' ')) LIKE :prefix ESCAPE '\\' THEN 1
+            WHEN lower(replace(r.redirect_title, '_', ' ')) = :exact THEN 0
+            WHEN lower(replace(r.redirect_title, '_', ' ')) LIKE :prefix ESCAPE '\\' THEN 1
             ELSE 2
         END AS rank
-    FROM Redirects r
-    JOIN Pages p ON p.url = {_STRIP_FRAGMENT_SQL}
-    WHERE LOWER(REPLACE(r.redirect_title, '_', ' ')) LIKE :contains ESCAPE '\\'
+    FROM redirects r
+    JOIN pages p ON p.url = {_STRIP_FRAGMENT_SQL} AND p.game_key = r.game_key
+    WHERE r.game_key = :game
+      AND lower(replace(r.redirect_title, '_', ' ')) LIKE :contains ESCAPE '\\'
 )
--- Group by title, not url: several redirects can point at the same page with
--- different #fragments, which must collapse to one result, not repeat it.
--- SQLite's min()/max() extension: bare columns take values from the row that
--- produced the aggregate, so url/image_url come from the best-ranked match.
-SELECT title, url, image_url, MIN(rank) AS best_rank
-FROM matches
-GROUP BY title
-ORDER BY best_rank, LENGTH(title), title
+SELECT title, url, image_url, best_rank
+FROM (
+    SELECT DISTINCT ON (title) title, url, image_url, rank AS best_rank
+    FROM matches
+    ORDER BY title, rank, length(title)
+) ranked
+ORDER BY best_rank, length(title), title
 LIMIT :limit
 """
+)
 
 
-def search_pages(
+async def search_pages(
     game_key: str, query: str, limit: int | None = None
 ) -> list[dict[str, Any]]:
     """Find wiki pages matching a query, via direct titles and redirects.
@@ -103,7 +98,7 @@ def search_pages(
         Page dicts with title, url and image_url keys.
 
     Raises:
-        sqlite3.Error: If the game database is missing or unreadable.
+        StorageError: If the database is unreachable.
     """
     normalized = normalize(query)
     if not normalized:
@@ -112,114 +107,94 @@ def search_pages(
         limit = settings.search_result_limit
 
     escaped = escape_like(normalized)
-    path = db_path(game_key)
-    # mode=ro means a missing database raises instead of being created silently.
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=settings.db_timeout_seconds)
-    try:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
+    async with session() as sess:
+        result = await sess.execute(
             _SEARCH_SQL,
             {
+                "game": game_key,
                 "exact": normalized,
                 "prefix": f"{escaped}%",
                 "contains": f"%{escaped}%",
                 "limit": limit,
             },
         )
-        return [dict(row) for row in cursor.fetchall()]
-    finally:
-        conn.close()
+        return [
+            {"title": row.title, "url": row.url, "image_url": row.image_url}
+            for row in result
+        ]
 
 
-async def search_pages_async(
-    game_key: str, query: str, limit: int | None = None
-) -> list[dict[str, Any]]:
-    """Run search_pages off the event loop; sqlite3 is blocking."""
-    return await asyncio.to_thread(search_pages, game_key, query, limit)
-
-
-def random_page(game_key: str) -> dict[str, Any] | None:
+async def random_page(game_key: str) -> dict[str, Any] | None:
     """Return a random page for the game, or None if it has no pages yet.
 
     Raises:
-        sqlite3.Error: If the game database is missing or unreadable.
+        StorageError: If the database is unreachable.
     """
-    path = db_path(game_key)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=settings.db_timeout_seconds)
-    try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT title, url, image_url FROM Pages ORDER BY RANDOM() LIMIT 1"
-        ).fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
+    stmt = (
+        select(Pages.title, Pages.url, Pages.image_url)
+        .where(Pages.game_key == game_key)
+        .order_by(func.random())
+        .limit(1)
+    )
+    async with session() as sess:
+        row = (await sess.execute(stmt)).first()
+        return dict(row._mapping) if row else None
 
 
-async def random_page_async(game_key: str) -> dict[str, Any] | None:
-    """Run random_page off the event loop; sqlite3 is blocking."""
-    return await asyncio.to_thread(random_page, game_key)
-
-
-def suggest_similar(
+async def suggest_similar(
     game_key: str, query: str, limit: int = FUZZY_MATCH_LIMIT
 ) -> list[dict[str, Any]]:
     """Fuzzy "did you mean" suggestions for when search_pages finds nothing.
 
     Only meant for the empty-result path: it loads every title in the game's
-    Pages table and fuzzy-matches with difflib, which is too slow to run on
-    every search but cheap for the rare case of zero hits at a few thousand
-    rows per game.
+    pages and fuzzy-matches with difflib, too slow to run on every search but
+    cheap for the rare case of zero hits at a few thousand rows per game.
 
     Raises:
-        sqlite3.Error: If the game database is missing or unreadable.
+        StorageError: If the database is unreachable.
     """
     normalized = normalize(query)
     if not normalized:
         return []
 
-    path = db_path(game_key)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=settings.db_timeout_seconds)
-    try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT title, url, image_url FROM Pages").fetchall()
-    finally:
-        conn.close()
+    stmt = select(Pages.title, Pages.url, Pages.image_url).where(Pages.game_key == game_key)
+    async with session() as sess:
+        rows = (await sess.execute(stmt)).all()
 
     # If two titles normalize the same, the later one silently wins; harmless
     # for a "did you mean" hint.
-    by_normalized = {normalize(row["title"]): row for row in rows}
+    by_normalized = {normalize(row.title): row for row in rows}
     close = difflib.get_close_matches(
         normalized, by_normalized.keys(), n=limit, cutoff=FUZZY_MATCH_CUTOFF
     )
-    return [dict(by_normalized[title]) for title in close]
+    return [dict(by_normalized[title]._mapping) for title in close]
 
 
-async def suggest_similar_async(
-    game_key: str, query: str, limit: int = FUZZY_MATCH_LIMIT
-) -> list[dict[str, Any]]:
-    """Run suggest_similar off the event loop; sqlite3 is blocking."""
-    return await asyncio.to_thread(suggest_similar, game_key, query, limit)
+async def db_stats(game_key: str) -> dict[str, Any] | None:
+    """Return {"pages", "redirects", "modified"} for a game, or None if it has
+    no pages loaded. Used by the /admin status command.
 
+    "modified" is the newest imported_at in the game's pages, as a POSIX
+    timestamp (there is no per-game file mtime any more).
 
-def db_stats(game_key: str) -> dict[str, Any] | None:
-    """Return {"pages", "redirects", "modified"} for a game's database, or
-    None if it doesn't exist yet. Used by the /admin status command.
+    Raises:
+        StorageError: If the database is unreachable.
     """
-    path = db_path(game_key)
-    if not path.exists():
-        return None
-
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=settings.db_timeout_seconds)
-    try:
-        pages = conn.execute("SELECT COUNT(*) FROM Pages").fetchone()[0]
-        redirects = conn.execute("SELECT COUNT(*) FROM Redirects").fetchone()[0]
-    finally:
-        conn.close()
+    async with session() as sess:
+        pages = await sess.scalar(
+            select(func.count()).select_from(Pages).where(Pages.game_key == game_key)
+        )
+        if not pages:
+            return None
+        redirects = await sess.scalar(
+            select(func.count()).select_from(Redirects).where(Redirects.game_key == game_key)
+        )
+        modified = await sess.scalar(
+            select(func.max(Pages.imported_at)).where(Pages.game_key == game_key)
+        )
 
     return {
         "pages": pages,
         "redirects": redirects,
-        "modified": path.stat().st_mtime,
+        "modified": modified.timestamp(),
     }

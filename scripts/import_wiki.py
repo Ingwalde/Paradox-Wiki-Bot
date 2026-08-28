@@ -1,13 +1,14 @@
-"""Populate a game's SQLite database from its paradoxwikis.com MediaWiki API.
+"""Populate a game's rows in Postgres from its paradoxwikis.com MediaWiki API.
 
-No API key needed. Usage:
+No API key needed; the database URL comes from the environment (see
+paradox_bot.config). Usage:
 
     python scripts/import_wiki.py eu5
 
-Writes databases/<game_key>.db with Pages and Redirects tables, matching the
-schema paradox_bot.search expects (see databases/eu4.db for reference). Safe
-to re-run: recreates both tables from scratch each time, so it always
-reflects current wiki state.
+Replaces the game's rows in the shared `pages` and `redirects` tables (one
+DELETE + insert per game, in a single transaction), so it is safe to re-run and
+always reflects current wiki state. To regenerate the committed seed dump
+afterwards, run scripts/dump_seed.py.
 
 To add a new game: add it to GAMES in paradox_bot/games.py (with its
 wiki_subdomain), then run this script.
@@ -16,19 +17,21 @@ wiki_subdomain), then run this script.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import sqlite3
 import sys
 import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from sqlalchemy import delete, insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from paradox_bot import storage
 from paradox_bot.games import GAMES
-
-DB_DIR = Path(__file__).resolve().parent.parent / "databases"
 
 USER_AGENT = "paradox-discord-bot-wiki-import/1.0"
 REQUEST_DELAY_SECONDS = 0.2
@@ -136,45 +139,55 @@ def fetch_redirects(subdomain: str) -> list[tuple[str, str, str]]:
     return redirects
 
 
+async def _write_async(
+    game_key: str,
+    pages: list[tuple[str, str, str]],
+    redirects: list[tuple[str, str, str]],
+) -> None:
+    """Replace one game's rows atomically: DELETE then bulk INSERT.
+
+    Idempotent per game (the SQLite version dropped and recreated the whole
+    file; the shared tables here can only clear the one game's rows). Duplicate
+    titles/urls within a game are ignored, matching the old INSERT OR IGNORE.
+    """
+    storage.init_engine()
+    try:
+        async with storage.session() as sess:
+            await sess.execute(delete(storage.Pages).where(storage.Pages.game_key == game_key))
+            await sess.execute(
+                delete(storage.Redirects).where(storage.Redirects.game_key == game_key)
+            )
+            if pages:
+                await sess.execute(
+                    pg_insert(storage.Pages).on_conflict_do_nothing(),
+                    [
+                        {"game_key": game_key, "title": t, "url": u, "image_url": i}
+                        for t, u, i in pages
+                    ],
+                )
+            if redirects:
+                await sess.execute(
+                    insert(storage.Redirects),
+                    [
+                        {
+                            "game_key": game_key,
+                            "redirect_title": rt,
+                            "redirect_url": ru,
+                            "target_page_url": tp,
+                        }
+                        for rt, ru, tp in redirects
+                    ],
+                )
+    finally:
+        await storage.dispose_engine()
+
+
 def write_database(
     game_key: str,
     pages: list[tuple[str, str, str]],
     redirects: list[tuple[str, str, str]],
 ) -> None:
-    db_file = DB_DIR / f"{game_key}.db"
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.executescript(
-            """
-            DROP TABLE IF EXISTS Pages;
-            DROP TABLE IF EXISTS Redirects;
-            CREATE TABLE Pages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT UNIQUE,
-                url TEXT UNIQUE,
-                image_url TEXT,
-                lang TEXT
-            );
-            CREATE TABLE Redirects (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                redirect_title TEXT,
-                redirect_url TEXT,
-                target_page_url TEXT,
-                FOREIGN KEY(target_page_url) REFERENCES Pages(url)
-            );
-            """
-        )
-        conn.executemany(
-            "INSERT OR IGNORE INTO Pages (title, url, image_url) VALUES (?, ?, ?)", pages
-        )
-        conn.executemany(
-            "INSERT INTO Redirects (redirect_title, redirect_url, target_page_url) "
-            "VALUES (?, ?, ?)",
-            redirects,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    asyncio.run(_write_async(game_key, pages, redirects))
 
 
 def main() -> None:
@@ -190,9 +203,8 @@ def main() -> None:
     redirects = fetch_redirects(subdomain)
     print(f"  {len(redirects)} redirects")
 
-    DB_DIR.mkdir(exist_ok=True)
     write_database(args.game_key, pages, redirects)
-    print(f"Wrote {DB_DIR / (args.game_key + '.db')}")
+    print(f"Wrote {len(pages)} pages and {len(redirects)} redirects for {args.game_key}")
 
 
 if __name__ == "__main__":

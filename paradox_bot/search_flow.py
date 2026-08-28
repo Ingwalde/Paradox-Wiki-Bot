@@ -8,17 +8,15 @@ cogs, events.
 from __future__ import annotations
 
 import logging
-import sqlite3
 
 import discord
 from discord import ui
 from discord.ext import commands
 
-from paradox_bot import search_context, stats
+from paradox_bot import search, search_context, stats
 from paradox_bot.config import settings
 from paradox_bot.feedback import FEEDBACK_EMOJIS
 from paradox_bot.games import GAMES
-from paradox_bot.search import search_pages_async, suggest_similar_async
 from paradox_bot.storage import StorageError
 from paradox_bot.ui.views import LinksView, PaginatedResultsView, build_links_field
 
@@ -35,8 +33,8 @@ async def perform_search(
         return
 
     try:
-        pages = await search_pages_async(game_key, query, limit=settings.search_max_results)
-    except sqlite3.Error:
+        pages = await search.search_pages(game_key, query, limit=settings.search_max_results)
+    except StorageError:
         logger.exception("Database search failed for %s: %r", game_key, query)
         await ctx.send("⚠️ Не вдалося виконати пошук. Спробуйте пізніше.")
         return
@@ -60,8 +58,8 @@ async def perform_search(
         if game.logo:
             embed.set_thumbnail(url=game.logo)
         try:
-            suggestions = await suggest_similar_async(game_key, query)
-        except sqlite3.Error:
+            suggestions = await search.suggest_similar(game_key, query)
+        except StorageError:
             logger.exception("Fuzzy suggestion lookup failed for %s: %r", game_key, query)
             suggestions = []
         if suggestions:

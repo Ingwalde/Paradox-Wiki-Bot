@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import logging
 import random
-import sqlite3
 from datetime import UTC, time
 
 import discord
 from discord.ext import commands, tasks
 
-from paradox_bot import stats
+from paradox_bot import search, stats
 from paradox_bot.config import settings
 from paradox_bot.games import GAMES
-from paradox_bot.search import random_page_async
+from paradox_bot.storage import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +56,8 @@ class ExtrasCog(commands.Cog):
             return
 
         try:
-            page = await random_page_async(game_key)
-        except sqlite3.Error:
+            page = await search.random_page(game_key)
+        except StorageError:
             logger.exception("Random page lookup failed for %s", game_key)
             await ctx.send("⚠️ Не вдалося отримати випадкову статтю.")
             return
@@ -109,8 +108,8 @@ class ExtrasCog(commands.Cog):
 
         game_key = random.choice(list(GAMES))
         try:
-            page = await random_page_async(game_key)
-        except sqlite3.Error:
+            page = await search.random_page(game_key)
+        except StorageError:
             logger.exception("Daily fact lookup failed for %s", game_key)
             return
         if page is None:

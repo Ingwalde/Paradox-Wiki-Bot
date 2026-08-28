@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import itertools
 import os
-import sqlite3
-from collections.abc import AsyncIterator, Iterator
-from pathlib import Path
+from collections.abc import AsyncIterator
 
 import discord
 import pytest
@@ -44,46 +42,22 @@ async def db() -> AsyncIterator[None]:
         await storage.dispose_engine()
 
 
-@pytest.fixture()
-def game_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Build a throwaway 'test' game database wired into paradox_bot.search."""
-    from paradox_bot.config import settings
+@pytest_asyncio.fixture()
+async def game_db(db: None, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+    """Register a throwaway 'test' game and yield its key.
+
+    The pages/redirects tables come from the `db` fixture (empty per test); this
+    only registers the game so search/db_stats accept the 'test' key. Insert
+    rows with insert_page / insert_redirect, which write with game_key='test'.
+    """
     from paradox_bot.games import GAMES, GameInfo
 
-    db_dir = tmp_path / "databases"
-    db_dir.mkdir()
-    db_file = db_dir / "test.db"
-
-    conn = sqlite3.connect(db_file)
-    conn.executescript(
-        """
-        CREATE TABLE Pages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT UNIQUE,
-            url TEXT UNIQUE,
-            image_url TEXT,
-            lang TEXT
-        );
-        CREATE TABLE Redirects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            redirect_title TEXT,
-            redirect_url TEXT,
-            target_page_url TEXT,
-            FOREIGN KEY(target_page_url) REFERENCES Pages(url)
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setattr(settings, "db_dir", db_dir)
     monkeypatch.setitem(
         GAMES,
         "test",
         GameInfo(key="test", name="Test Game", color=0, logo="", wiki_subdomain="test"),
     )
-    yield db_file
-    del GAMES["test"]
+    yield "test"
 
 
 class FakeMessage:
@@ -181,26 +155,24 @@ def interaction() -> FakeInteraction:
     return FakeInteraction()
 
 
-def insert_page(db_file: Path, title: str, url: str, image_url: str = "") -> None:
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.execute(
-            "INSERT INTO Pages (title, url, image_url) VALUES (?, ?, ?)",
-            (title, url, image_url),
+async def insert_page(game_key: str, title: str, url: str, image_url: str = "") -> None:
+    from paradox_bot import storage
+
+    async with storage.session() as sess:
+        sess.add(
+            storage.Pages(game_key=game_key, title=title, url=url, image_url=image_url)
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
-def insert_redirect(db_file: Path, redirect_title: str, target_page_url: str) -> None:
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.execute(
-            "INSERT INTO Redirects (redirect_title, redirect_url, target_page_url) "
-            "VALUES (?, '', ?)",
-            (redirect_title, target_page_url),
+async def insert_redirect(game_key: str, redirect_title: str, target_page_url: str) -> None:
+    from paradox_bot import storage
+
+    async with storage.session() as sess:
+        sess.add(
+            storage.Redirects(
+                game_key=game_key,
+                redirect_title=redirect_title,
+                redirect_url="",
+                target_page_url=target_page_url,
+            )
         )
-        conn.commit()
-    finally:
-        conn.close()

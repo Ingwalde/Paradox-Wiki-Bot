@@ -67,13 +67,13 @@ class FakeBot:
         self.latency = 0.042
 
 
-def test_status_reports_guilds_latency_and_databases(
+async def test_status_reports_guilds_latency_and_databases(
     interaction: FakeInteraction, game_db
 ) -> None:
-    insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
+    await insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
     group = AdminGroup(bot=FakeBot())
 
-    asyncio.run(group.status.callback(group, interaction))
+    await group.status.callback(group, interaction)
 
     sent = interaction.response.sent[0]
     assert sent["ephemeral"] is True
@@ -83,12 +83,11 @@ def test_status_reports_guilds_latency_and_databases(
     assert "Test Game**: 1 стор." in description
 
 
-def test_status_flags_a_missing_database(interaction: FakeInteraction, monkeypatch, tmp_path):
-    # Point at an empty directory so every configured game has no file.
-    monkeypatch.setattr(settings, "db_dir", tmp_path)
+async def test_status_flags_a_missing_database(interaction: FakeInteraction, db):
+    # No game has any rows loaded, so every configured game reports as absent.
     group = AdminGroup(bot=FakeBot())
 
-    asyncio.run(group.status.callback(group, interaction))
+    await group.status.callback(group, interaction)
 
     assert "БД відсутня" in interaction.response.sent[0]["embed"].description
 
