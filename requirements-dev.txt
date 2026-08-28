@@ -1,6 +1,7 @@
 -r requirements.txt
 pytest>=8.0,<9.0
 pytest-cov>=6.0,<7.0
+pytest-asyncio>=0.24,<1.0
 # Exact pins, not ranges: .pre-commit-config.yaml pins these same tools by rev,
 # and a range lets CI resolve a newer one than the hook runs. A lint release
 # that adds a check would then pass locally and fail in CI. Dependabot's

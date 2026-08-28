@@ -7,7 +7,6 @@ cogs, events.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import sqlite3
 
@@ -20,6 +19,7 @@ from paradox_bot.config import settings
 from paradox_bot.feedback import FEEDBACK_EMOJIS
 from paradox_bot.games import GAMES
 from paradox_bot.search import search_pages_async, suggest_similar_async
+from paradox_bot.storage import StorageError
 from paradox_bot.ui.views import LinksView, PaginatedResultsView, build_links_field
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,8 @@ async def perform_search(
         return
 
     try:
-        await asyncio.to_thread(stats.record_search, game_key, query)
-    except sqlite3.Error:
+        await stats.record_search(game_key, query)
+    except StorageError:
         logger.exception("Could not record search stats for %s: %r", game_key, query)
 
     view: ui.View | None = None

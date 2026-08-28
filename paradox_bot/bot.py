@@ -7,9 +7,7 @@ ever grow a new event handler or a new cog registration.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import sqlite3
 from datetime import UTC, datetime
 
 import discord
@@ -24,6 +22,7 @@ from paradox_bot.config import settings
 from paradox_bot.feedback import FEEDBACK_EMOJIS, record_feedback
 from paradox_bot.games import GAMES
 from paradox_bot.search_flow import perform_search
+from paradox_bot.storage import StorageError
 from paradox_bot.web import KeepAliveServer
 
 logger = logging.getLogger(__name__)
@@ -145,8 +144,7 @@ class ParadoxBot(commands.Bot):
             context["top_url"],
         )
         try:
-            await asyncio.to_thread(
-                record_feedback,
+            await record_feedback(
                 str(payload.message_id),
                 str(payload.user_id),
                 context["game_key"],
@@ -155,6 +153,6 @@ class ParadoxBot(commands.Bot):
                 context["top_title"],
                 context["top_url"],
             )
-        except sqlite3.Error:
+        except StorageError:
             logger.exception("Could not record feedback for message %s", payload.message_id)
 

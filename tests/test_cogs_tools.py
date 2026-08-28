@@ -47,11 +47,10 @@ class FakeBot:
 
 
 @pytest.fixture(autouse=True)
-def _configured(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    """Credentials present and a temp uploads DB, unless a test says otherwise."""
+def _configured(monkeypatch: pytest.MonkeyPatch):
+    """Credentials present, unless a test says otherwise."""
     monkeypatch.setattr(settings, "pdx_tools_user_id", "user-42")
     monkeypatch.setattr(settings, "pdx_tools_api_key", "secret")
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
 
 
 def _cog(attachment: FakeAttachment | None = None) -> ToolsCog:
@@ -82,13 +81,13 @@ def test_rejects_an_oversized_attachment(ctx: FakeContext, monkeypatch) -> None:
     assert not any("Завантажую" in t for t in ctx.texts)
 
 
-def test_successful_upload_reports_the_real_url(ctx: FakeContext, monkeypatch) -> None:
+async def test_successful_upload_reports_the_real_url(ctx: FakeContext, monkeypatch, db) -> None:
     async def fake_upload(_filename: str, _payload: bytes) -> str:
         return "https://pdx.tools/eu4/saves/abc123"
 
     monkeypatch.setattr("paradox_bot.cogs.tools.upload_to_pdx_tools", fake_upload)
     cog = _cog()
-    asyncio.run(cog.tools.callback(cog, ctx))
+    await cog.tools.callback(cog, ctx)
 
     assert ctx.texts[-1] == "✅ Завантажено: https://pdx.tools/eu4/saves/abc123"
     # The progress message is cleaned up rather than left dangling.
@@ -96,39 +95,44 @@ def test_successful_upload_reports_the_real_url(ctx: FakeContext, monkeypatch) -
     assert progress and progress[0].deleted
 
 
-def test_successful_upload_is_recorded(ctx: FakeContext, monkeypatch) -> None:
+async def test_successful_upload_is_recorded(ctx: FakeContext, monkeypatch, db) -> None:
     async def fake_upload(_filename: str, _payload: bytes) -> str:
         return "https://pdx.tools/eu4/saves/abc123"
 
     monkeypatch.setattr("paradox_bot.cogs.tools.upload_to_pdx_tools", fake_upload)
     cog = _cog()
-    asyncio.run(cog.tools.callback(cog, ctx))
+    await cog.tools.callback(cog, ctx)
 
-    assert pdx_tools.find_prior_upload_url("save.eu4") == "https://pdx.tools/eu4/saves/abc123"
+    assert (
+        await pdx_tools.find_prior_upload_url("save.eu4")
+        == "https://pdx.tools/eu4/saves/abc123"
+    )
 
 
-def test_duplicate_returns_the_previously_recorded_link(ctx: FakeContext, monkeypatch) -> None:
-    pdx_tools.record_upload("42", "save.eu4", "https://pdx.tools/eu4/saves/older")
+async def test_duplicate_returns_the_previously_recorded_link(
+    ctx: FakeContext, monkeypatch, db
+) -> None:
+    await pdx_tools.record_upload("42", "save.eu4", "https://pdx.tools/eu4/saves/older")
 
     async def duplicate(_filename: str, _payload: bytes) -> str:
         raise pdx_tools.PdxDuplicateSaveError('{"msg": "save already exists"}')
 
     monkeypatch.setattr("paradox_bot.cogs.tools.upload_to_pdx_tools", duplicate)
     cog = _cog()
-    asyncio.run(cog.tools.callback(cog, ctx))
+    await cog.tools.callback(cog, ctx)
 
     assert ctx.texts[-1] == "✅ Завантажено: https://pdx.tools/eu4/saves/older"
 
 
-def test_duplicate_without_a_record_points_at_the_account_page(
-    ctx: FakeContext, monkeypatch
+async def test_duplicate_without_a_record_points_at_the_account_page(
+    ctx: FakeContext, monkeypatch, db
 ) -> None:
     async def duplicate(_filename: str, _payload: bytes) -> str:
         raise pdx_tools.PdxDuplicateSaveError('{"msg": "save already exists"}')
 
     monkeypatch.setattr("paradox_bot.cogs.tools.upload_to_pdx_tools", duplicate)
     cog = _cog()
-    asyncio.run(cog.tools.callback(cog, ctx))
+    await cog.tools.callback(cog, ctx)
 
     message = ctx.texts[-1]
     assert "уже завантажено" in message
@@ -173,11 +177,13 @@ def test_unexpected_error_does_not_leak_a_traceback(ctx: FakeContext, monkeypatc
 def test_bookkeeping_failure_does_not_hide_a_successful_upload(
     ctx: FakeContext, monkeypatch
 ) -> None:
+    from paradox_bot.storage import StorageError
+
     async def fake_upload(_filename: str, _payload: bytes) -> str:
         return "https://pdx.tools/eu4/saves/abc123"
 
-    def broken_record(*_args: object) -> None:
-        raise __import__("sqlite3").OperationalError("database is locked")
+    async def broken_record(*_args: object) -> None:
+        raise StorageError("database is locked")
 
     monkeypatch.setattr("paradox_bot.cogs.tools.upload_to_pdx_tools", fake_upload)
     monkeypatch.setattr("paradox_bot.cogs.tools.record_upload", broken_record)

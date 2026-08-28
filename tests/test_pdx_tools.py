@@ -12,22 +12,19 @@ from paradox_bot import pdx_tools
 from paradox_bot.config import settings
 
 
-def test_find_prior_upload_url_returns_most_recent(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/new")
-    assert pdx_tools.find_prior_upload_url("save.eu4") == "https://pdx.tools/eu4/saves/new"
+async def test_find_prior_upload_url_returns_most_recent(db: None) -> None:
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/new")
+    assert await pdx_tools.find_prior_upload_url("save.eu4") == "https://pdx.tools/eu4/saves/new"
 
 
-def test_find_prior_upload_url_unknown_filename_returns_none(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
-    assert pdx_tools.find_prior_upload_url("other.eu4") is None
+async def test_find_prior_upload_url_unknown_filename_returns_none(db: None) -> None:
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
+    assert await pdx_tools.find_prior_upload_url("other.eu4") is None
 
 
-def test_find_prior_upload_url_no_table_yet_returns_none(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    assert pdx_tools.find_prior_upload_url("save.eu4") is None
+async def test_find_prior_upload_url_empty_returns_none(db: None) -> None:
+    assert await pdx_tools.find_prior_upload_url("save.eu4") is None
 
 
 def test_prepare_save_payload_passes_zip_through() -> None:

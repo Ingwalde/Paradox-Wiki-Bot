@@ -1,64 +1,68 @@
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
-
 import pytest
+from sqlalchemy import select, text
 
 from paradox_bot import storage
+from paradox_bot.config import settings
+from tests.conftest import TEST_DATABASE_URL
 
 
-@pytest.fixture(autouse=True)
-def _clean_cache() -> None:
-    storage.reset_schema_cache()
+async def test_check_db_true_when_reachable(db: None) -> None:
+    assert await storage.check_db() is True
 
 
-def test_connect_creates_the_schema(tmp_path: Path) -> None:
-    conn = storage.connect(tmp_path / "x.db", storage.SEARCH_LOG_SCHEMA)
+async def test_check_db_false_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Nothing listens on port 1; the probe must return False, not raise.
+    storage.init_engine("postgresql+asyncpg://postgres@127.0.0.1:1/paradox")
+    monkeypatch.setattr(settings, "db_health_timeout_seconds", 1.0)
     try:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert await storage.check_db() is False
     finally:
-        conn.close()
-    assert "SearchLog" in tables
+        await storage.dispose_engine()
 
 
-def test_connect_enables_wal(tmp_path: Path) -> None:
-    conn = storage.connect(tmp_path / "x.db", storage.SEARCH_LOG_SCHEMA)
+async def test_wait_for_db_returns_when_reachable(db: None) -> None:
+    await storage.wait_for_db()  # must not raise
+
+
+async def test_wait_for_db_raises_after_exhausting_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "db_connect_retries", 2)
+    monkeypatch.setattr(settings, "db_connect_base_delay", 0.01)
+    storage.init_engine("postgresql+asyncpg://postgres@127.0.0.1:1/paradox")
     try:
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        with pytest.raises(storage.StorageError):
+            await storage.wait_for_db()
     finally:
-        conn.close()
+        await storage.dispose_engine()
 
 
-def test_schema_runs_once_per_file(tmp_path: Path) -> None:
-    db = tmp_path / "x.db"
-    storage.connect(db, storage.SEARCH_LOG_SCHEMA).close()
-    # A second connect must not re-run the DDL; a schema that would fail on a
-    # second execution proves it is skipped.
-    poisoned = "CREATE TABLE SearchLog (boom INTEGER)"
-    storage.connect(db, poisoned).close()
+async def test_session_translates_driver_errors_into_storage_error(db: None) -> None:
+    with pytest.raises(storage.StorageError):
+        async with storage.session() as sess:
+            await sess.execute(text("SELECT * FROM table_that_does_not_exist"))
 
 
-def test_schema_cache_is_per_resolved_path(tmp_path: Path) -> None:
-    storage.connect(tmp_path / "a.db", storage.FEEDBACK_SCHEMA).close()
-    conn = storage.connect(tmp_path / "b.db", storage.FEEDBACK_SCHEMA)
-    try:
-        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    finally:
-        conn.close()
-    assert "Feedback" in tables
+async def test_identity_primary_key_is_assigned_by_the_database(db: None) -> None:
+    async with storage.session() as sess:
+        row = storage.Uploads(user_id="u", filename="a.eu4", url="https://x")
+        sess.add(row)
+        await sess.flush()
+        assert row.id is not None
 
 
-def test_connect_closes_the_connection_when_schema_fails(tmp_path: Path) -> None:
-    with pytest.raises(sqlite3.Error):
-        storage.connect(tmp_path / "x.db", "THIS IS NOT SQL")
-    # A leaked connection would keep the file locked; reopening proves it did not.
-    storage.connect(tmp_path / "x.db", storage.SEARCH_LOG_SCHEMA).close()
+async def test_created_at_defaults_to_now(db: None) -> None:
+    async with storage.session() as sess:
+        sess.add(storage.SearchLog(game_key="eu4", query="rome"))
+    async with storage.session() as sess:
+        stamp = await sess.scalar(select(storage.SearchLog.timestamp))
+    assert stamp is not None
 
 
-@pytest.mark.parametrize(
-    "schema",
-    [storage.UPLOADS_SCHEMA, storage.FEEDBACK_SCHEMA, storage.SEARCH_LOG_SCHEMA],
-)
-def test_every_schema_is_valid_sql(tmp_path: Path, schema: str) -> None:
-    storage.connect(tmp_path / f"{hash(schema)}.db", schema).close()
+def test_engine_is_reused_for_the_default_url() -> None:
+    storage.init_engine(TEST_DATABASE_URL)
+    first = storage.get_engine()
+    # A second call with no explicit URL keeps the same engine.
+    assert storage.init_engine() is first

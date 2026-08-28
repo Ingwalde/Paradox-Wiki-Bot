@@ -3,12 +3,45 @@
 from __future__ import annotations
 
 import itertools
+import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import discord
 import pytest
+import pytest_asyncio
+from sqlalchemy import text
+
+# The writable tables live in Postgres. Point the tests at a throwaway database:
+# the CI `test` job supplies TEST_DATABASE_URL for its `postgres` service, and a
+# local run falls back to a developer's own instance.
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://postgres@127.0.0.1:5432/paradox"
+)
+
+
+@pytest_asyncio.fixture()
+async def db() -> AsyncIterator[None]:
+    """Point storage at the test database with the schema present and empty.
+
+    A single engine per test (bound to that test's event loop, which asyncpg
+    requires), the ORM schema created if missing, and every table truncated so
+    each test starts from a clean slate regardless of order.
+    """
+    from paradox_bot import storage
+
+    storage.init_engine(TEST_DATABASE_URL)
+    engine = storage.get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(storage.Base.metadata.create_all)
+        tables = ", ".join(t.name for t in storage.Base.metadata.sorted_tables)
+        if tables:
+            await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+    try:
+        yield
+    finally:
+        await storage.dispose_engine()
 
 
 @pytest.fixture()

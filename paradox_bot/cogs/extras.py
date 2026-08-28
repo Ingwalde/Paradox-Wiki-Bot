@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import random
 import sqlite3
@@ -82,7 +81,7 @@ class ExtrasCog(commands.Cog):
             await ctx.send(_unknown_game_message(game_key))
             return
 
-        rows = await asyncio.to_thread(stats.trending, game_key)
+        rows = await stats.trending(game_key)
         if not rows:
             await ctx.send("Ще немає даних для цієї гри.")
             return

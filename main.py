@@ -12,6 +12,7 @@ import asyncio
 import logging
 import signal
 
+from paradox_bot import db_migrate, storage
 from paradox_bot.bot import ParadoxBot
 from paradox_bot.config import settings
 
@@ -23,10 +24,20 @@ async def run_bot() -> None:
 
     `docker stop` sends SIGTERM and waits nine seconds before SIGKILL, and
     deploys restart the container on every merge. Without a handler the process
-    dies where it stands, which can be in the middle of a SQLite write. Closing
-    the bot makes `start()` return, and `async with` then runs the cleanup —
-    including stopping the health endpoint, in ParadoxBot.close().
+    dies where it stands. Closing the bot makes `start()` return, and
+    `async with` then runs the cleanup — including stopping the health endpoint,
+    in ParadoxBot.close().
+
+    Before the gateway comes up the database has to be reachable and migrated:
+    the bot can win the startup race against its own Postgres container, so the
+    first connection is retried, then Alembic brings the schema up to head.
     """
+    storage.init_engine()
+    await storage.wait_for_db()
+    # Alembic is synchronous and its env.py runs its own event loop, so it must
+    # execute off this one.
+    await asyncio.to_thread(db_migrate.run_migrations)
+
     bot = ParadoxBot()
     loop = asyncio.get_running_loop()
 
@@ -43,8 +54,11 @@ async def run_bot() -> None:
             # local development. Production is Linux.
             logger.debug("Signal handler for %s unavailable on this platform", sig.name)
 
-    async with bot:
-        await bot.start(settings.token)
+    try:
+        async with bot:
+            await bot.start(settings.token)
+    finally:
+        await storage.dispose_engine()
 
 
 def main() -> None:

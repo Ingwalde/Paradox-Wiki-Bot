@@ -7,6 +7,7 @@ import urllib.request
 
 import pytest
 
+from paradox_bot import storage
 from paradox_bot.config import settings
 from paradox_bot.web import KeepAliveServer, build_app, health
 
@@ -22,12 +23,21 @@ def _fetch(port: int) -> str:
         return str(resp.read().decode())
 
 
+def _stub_check_db(monkeypatch: pytest.MonkeyPatch, healthy: bool) -> None:
+    async def fake_check_db() -> bool:
+        return healthy
+
+    monkeypatch.setattr(storage, "check_db", fake_check_db)
+
+
 def test_app_exposes_both_paths() -> None:
     paths = {route.resource.canonical for route in build_app().router.routes()}
     assert paths == {"/", "/health"}
 
 
-def test_health_returns_the_liveness_string() -> None:
+def test_health_returns_the_liveness_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_check_db(monkeypatch, healthy=True)
+
     async def run() -> None:
         response = await health(None)  # type: ignore[arg-type]
         assert response.status == 200
@@ -36,9 +46,20 @@ def test_health_returns_the_liveness_string() -> None:
     asyncio.run(run())
 
 
+def test_health_is_503_when_the_database_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_check_db(monkeypatch, healthy=False)
+
+    async def run() -> None:
+        response = await health(None)  # type: ignore[arg-type]
+        assert response.status == 503
+
+    asyncio.run(run())
+
+
 def test_server_serves_and_then_releases_the_port(monkeypatch: pytest.MonkeyPatch) -> None:
     port = _free_port()
     monkeypatch.setattr(settings, "server_port", port)
+    _stub_check_db(monkeypatch, healthy=True)
 
     async def run() -> None:
         server = KeepAliveServer()

@@ -5,12 +5,12 @@ from __future__ import annotations
 import gzip
 import json
 import logging
-import sqlite3
 
 import aiohttp
+from sqlalchemy import select
 
-from paradox_bot import storage
 from paradox_bot.config import settings
+from paradox_bot.storage import Uploads, session
 
 logger = logging.getLogger(__name__)
 
@@ -109,36 +109,30 @@ async def upload_to_pdx_tools(filename: str, payload: bytes) -> str:
         raise PdxToolsError(f"мережева помилка: {exc}") from exc
 
 
-def record_upload(user_id: str, filename: str, url: str) -> None:
-    """Persist a successful upload. Blocking; call via asyncio.to_thread."""
-    conn = storage.connect(settings.upload_db_path, storage.UPLOADS_SCHEMA)
-    try:
-        conn.execute(
-            "INSERT INTO Uploads (user_id, filename, url) VALUES (?, ?, ?)",
-            (user_id, filename, url),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+async def record_upload(user_id: str, filename: str, url: str) -> None:
+    """Persist a successful upload.
+
+    Raises:
+        StorageError: If the write fails.
+    """
+    async with session() as sess:
+        sess.add(Uploads(user_id=user_id, filename=filename, url=url))
 
 
-def find_prior_upload_url(filename: str) -> str | None:
+async def find_prior_upload_url(filename: str) -> str | None:
     """Look up the URL we recorded the last time this filename was uploaded.
 
     pdx.tools' "save already exists" error carries no save id, so this is how
     the bot recovers the link instead of just saying "already uploaded".
-    Blocking; call via asyncio.to_thread.
+
+    Raises:
+        StorageError: If the read fails.
     """
-    conn = storage.connect(settings.upload_db_path, storage.UPLOADS_SCHEMA)
-    try:
-        cursor = conn.execute(
-            "SELECT url FROM Uploads WHERE filename = ? ORDER BY id DESC LIMIT 1",
-            (filename,),
-        )
-        row = cursor.fetchone()
-        return row[0] if row else None
-    except sqlite3.OperationalError:
-        # Uploads table doesn't exist yet: nothing has ever been recorded.
-        return None
-    finally:
-        conn.close()
+    stmt = (
+        select(Uploads.url)
+        .where(Uploads.filename == filename)
+        .order_by(Uploads.id.desc())
+        .limit(1)
+    )
+    async with session() as sess:
+        return await sess.scalar(stmt)

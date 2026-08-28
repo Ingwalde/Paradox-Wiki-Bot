@@ -93,24 +93,22 @@ def test_status_flags_a_missing_database(interaction: FakeInteraction, monkeypat
     assert "БД відсутня" in interaction.response.sent[0]["embed"].description
 
 
-def test_feedback_reports_when_empty(interaction: FakeInteraction, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "feedback_db_path", tmp_path / "feedback.db")
+async def test_feedback_reports_when_empty(interaction: FakeInteraction, db):
     group = AdminGroup(bot=FakeBot())
 
-    asyncio.run(group.feedback_cmd.callback(group, interaction))
+    await group.feedback_cmd.callback(group, interaction)
 
     sent = interaction.response.sent[0]
     assert "Ще немає жодного голосу" in sent["content"]
     assert sent["ephemeral"] is True
 
 
-def test_feedback_lists_votes_newest_first(interaction: FakeInteraction, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "feedback_db_path", tmp_path / "feedback.db")
-    feedback.record_feedback("msg-1", "1", "eu4", "absolutism", "up", "Absolutism", "u")
-    feedback.record_feedback("msg-2", "2", "hoi4", "germany", "down", None, None)
+async def test_feedback_lists_votes_newest_first(interaction: FakeInteraction, db):
+    await feedback.record_feedback("msg-1", "1", "eu4", "absolutism", "up", "Absolutism", "u")
+    await feedback.record_feedback("msg-2", "2", "hoi4", "germany", "down", None, None)
     group = AdminGroup(bot=FakeBot())
 
-    asyncio.run(group.feedback_cmd.callback(group, interaction))
+    await group.feedback_cmd.callback(group, interaction)
 
     description = interaction.response.sent[0]["embed"].description
     lines = description.split("\n")
@@ -122,13 +120,12 @@ def test_feedback_lists_votes_newest_first(interaction: FakeInteraction, monkeyp
     assert "Absolutism" in lines[1]
 
 
-def test_feedback_respects_the_limit(interaction: FakeInteraction, monkeypatch, tmp_path):
-    monkeypatch.setattr(settings, "feedback_db_path", tmp_path / "feedback.db")
+async def test_feedback_respects_the_limit(interaction: FakeInteraction, db):
     for i in range(5):
-        feedback.record_feedback(f"msg-{i}", "1", "eu4", f"query {i}", "up", "T", "u")
+        await feedback.record_feedback(f"msg-{i}", "1", "eu4", f"query {i}", "up", "T", "u")
     group = AdminGroup(bot=FakeBot())
 
-    asyncio.run(group.feedback_cmd.callback(group, interaction, limit=2))
+    await group.feedback_cmd.callback(group, interaction, limit=2)
 
     description = interaction.response.sent[0]["embed"].description
     assert len(description.split("\n")) == 2

@@ -28,6 +28,26 @@ jobs:
   test:
     name: Tests
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: paradox
+        ports:
+          - 5432:5432
+        # Wait for the database to accept connections before the tests run.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # The test suite's fixtures connect here; the same URL doubles as the
+      # bot's own DATABASE_URL for any code that reads settings at import time.
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/paradox
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/paradox
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

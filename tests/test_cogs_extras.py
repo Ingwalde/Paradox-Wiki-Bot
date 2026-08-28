@@ -95,23 +95,17 @@ def test_trending_rejects_unknown_game(cog: ExtrasCog, ctx: FakeContext) -> None
     assert "Невідома гра" in ctx.texts[0]
 
 
-def test_trending_reports_no_data(
-    cog: ExtrasCog, ctx: FakeContext, tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    asyncio.run(cog.trending_command.callback(cog, ctx, "eu4"))
+async def test_trending_reports_no_data(cog: ExtrasCog, ctx: FakeContext, db) -> None:
+    await cog.trending_command.callback(cog, ctx, "eu4")
     assert "Ще немає даних" in ctx.texts[0]
 
 
-def test_trending_lists_queries_by_frequency(
-    cog: ExtrasCog, ctx: FakeContext, tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "prussia")
+async def test_trending_lists_queries_by_frequency(cog: ExtrasCog, ctx: FakeContext, db) -> None:
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "prussia")
 
-    asyncio.run(cog.trending_command.callback(cog, ctx, "eu4"))
+    await cog.trending_command.callback(cog, ctx, "eu4")
 
     description = ctx.embeds[0].description
     assert "1. **absolutism** (2)" in description

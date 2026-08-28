@@ -13,13 +13,23 @@ import logging
 
 from aiohttp import web
 
+from paradox_bot import storage
 from paradox_bot.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 async def health(request: web.Request) -> web.Response:
+    """Liveness plus a cheap database probe.
+
+    The bot is only healthy if it can reach Postgres: with the database down it
+    can answer Discord but not actually search or record anything, so a failing
+    SELECT 1 turns this red (503) rather than reporting a bot that is only
+    half-working as fine.
+    """
     logger.debug("Keep-alive ping received")
+    if not await storage.check_db():
+        return web.Response(status=503, text="database unavailable")
     return web.Response(text="I'm alive!")
 
 

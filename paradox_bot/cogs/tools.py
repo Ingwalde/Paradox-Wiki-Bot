@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 
 import discord
 from discord.ext import commands
@@ -18,6 +17,7 @@ from paradox_bot.pdx_tools import (
     record_upload,
     upload_to_pdx_tools,
 )
+from paradox_bot.storage import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class ToolsCog(commands.Cog):
             return
         except PdxDuplicateSaveError:
             logger.info("Duplicate upload of %s: already on pdx.tools", attachment.filename)
-            prior_url = await asyncio.to_thread(find_prior_upload_url, attachment.filename)
+            prior_url = await find_prior_upload_url(attachment.filename)
             if prior_url:
                 await ctx.send(f"✅ Завантажено: {prior_url}")
             else:
@@ -102,8 +102,8 @@ class ToolsCog(commands.Cog):
                 logger.warning("Could not delete progress message", exc_info=True)
 
         try:
-            await asyncio.to_thread(record_upload, str(ctx.author.id), attachment.filename, url)
-        except sqlite3.Error:
+            await record_upload(str(ctx.author.id), attachment.filename, url)
+        except StorageError:
             # The upload succeeded; a bookkeeping failure must not hide that.
             logger.exception("Could not record upload of %s", attachment.filename)
 
