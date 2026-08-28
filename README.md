@@ -5,7 +5,7 @@
 ![Docker](https://img.shields.io/badge/docker-ghcr.io-2496ED?logo=docker&logoColor=white)
 ![discord.py](https://img.shields.io/badge/discord.py-2.x-5865F2?logo=discord&logoColor=white)
 ![mypy](https://img.shields.io/badge/mypy-checked-2A6DB2)
-![Coverage](https://img.shields.io/badge/coverage-81%25*-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-91%25*-brightgreen)
 [![License: MIT](https://img.shields.io/badge/license-MIT-lightgrey)](LICENSE)
 
 Discord-бот з українським інтерфейсом для пошуку сторінок Paradox-вікі
@@ -224,29 +224,33 @@ mypy
 pytest -q --cov=paradox_bot --cov-report=term-missing
 ```
 
-144 тести: чисті функції (`search.py`, `pdx_tools.py`, `feedback.py`,
+171 тест: чисті функції (`search.py`, `pdx_tools.py`, `feedback.py`,
 `stats.py`, `config.py`, `storage.py`), формат embed'ів і view, усі гілки
 команд у `cogs/`, і `-tools`-аплоад проти реального локального
 `aiohttp`-сервера (basic auth, заголовки, побайтова цілісність тіла).
+БД-тести йдуть проти справжнього Postgres (у CI — сервіс `postgres`, локально —
+`TEST_DATABASE_URL`), з окремим engine на тест і `TRUNCATE` між тестами.
 
 Команди тестуються через `.callback(cog, ctx)` з фейковими `ctx`/`interaction`
 з `tests/conftest.py`, які просто записують, що було б надіслано. Discord-клієнт,
 gateway і HTTP-шар не мокаються взагалі.
 
-\* Coverage-бейдж (80%) — по всьому пакету, з гейтом `fail_under = 78` у CI.
+\* Coverage-бейдж (91%) — по всьому пакету, з гейтом `fail_under = 88` у CI.
 Непокрите — майже виключно event-хендлери й прямі виклики Discord API в
 `bot.py`; підняти цифру означає протестувати їх, а не розріджувати розрив
 моками.
 
 | Модуль | Покриття |
 |---|---|
-| `admin.py`, `config.py`, `games.py`, `storage.py`, `web.py` | 100% |
-| `search.py` | 97% |
-| `extras.py` | 95% |
-| `help.py`, `tools.py`, `feedback.py` | 94% |
-| `stats.py` | 90% |
-| `pdx_tools.py` | 88% |
-| `bot.py` | 43% (хелпери й view; event-хендлери й Discord-виклики — ні) |
+| `admin.py`, `db_migrate.py`, `feedback.py`, `games.py`, `metrics.py`, `search.py`, `search_context.py`, `stats.py`, `web.py` | 100% |
+| `search_flow.py` | 99% |
+| `storage.py` | 96% |
+| `extras.py`, `tools.py` | 95% |
+| `help.py` | 94% |
+| `views.py` | 92% |
+| `config.py` | 91% |
+| `pdx_tools.py` | 90% |
+| `bot.py` | 45% (хелпери й view; event-хендлери й Discord-виклики — ні) |
 
 pre-commit (`pre-commit install`): ruff, mypy, `detect-private-key`,
 `check-added-large-files`.

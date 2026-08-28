@@ -31,6 +31,12 @@ async def health(request: web.Request) -> web.Response:
     logger.debug("Keep-alive ping received")
     if not await storage.check_db():
         return web.Response(status=503, text="database unavailable")
+    # A volume that was never seeded migrates the writable tables but has no
+    # game data, so the bot would answer Discord while every search fails. Fail
+    # the health check on that too, so a deploy rolls back instead of shipping a
+    # bot with no pages.
+    if not await storage.game_data_ready():
+        return web.Response(status=503, text="game data not seeded")
     return web.Response(text="I'm alive!")
 
 

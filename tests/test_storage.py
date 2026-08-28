@@ -12,6 +12,33 @@ async def test_check_db_true_when_reachable(db: None) -> None:
     assert await storage.check_db() is True
 
 
+async def test_game_data_ready_false_when_pages_empty(db: None) -> None:
+    # The `db` fixture creates the tables but seeds nothing.
+    assert await storage.game_data_ready() is False
+
+
+async def test_game_data_ready_true_when_pages_present(db: None) -> None:
+    async with storage.session() as sess:
+        sess.add(storage.Pages(game_key="eu4", title="Absolutism", url="https://x"))
+    assert await storage.game_data_ready() is True
+
+
+async def test_game_data_ready_false_when_table_missing(db: None) -> None:
+    async with storage.get_engine().begin() as conn:
+        await conn.execute(text("DROP TABLE IF EXISTS pages CASCADE"))
+    # to_regclass returns NULL for a missing table, so this is False, not an error.
+    assert await storage.game_data_ready() is False
+
+
+async def test_game_data_ready_false_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    storage.init_engine("postgresql+asyncpg://postgres@127.0.0.1:1/paradox")
+    monkeypatch.setattr(settings, "db_health_timeout_seconds", 1.0)
+    try:
+        assert await storage.game_data_ready() is False
+    finally:
+        await storage.dispose_engine()
+
+
 async def test_check_db_false_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
     # Nothing listens on port 1; the probe must return False, not raise.
     storage.init_engine("postgresql+asyncpg://postgres@127.0.0.1:1/paradox")

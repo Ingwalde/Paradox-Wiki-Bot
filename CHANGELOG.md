@@ -12,6 +12,12 @@ All notable changes to this project will be documented in this file.
   for a wedged event loop). Covers what exists today: searches per game, empty
   results, ✅/❌ votes, uploads by outcome (success / duplicate / API rejection),
   database errors by operation, and a search-latency histogram.
+- Startup and `/health` now fail when the game data is missing. The seed only
+  loads on a fresh Postgres volume, so an existing volume can migrate the
+  writable tables while `pages` stays empty — the bot would then answer Discord
+  while every search errors. `storage.game_data_ready()` gates both: a
+  `logger.critical` at startup, and a 503 from `/health` (extending its existing
+  database probe) so a deploy rolls back instead of shipping a bot with no data.
 
 ### Changed
 - **Migrated the whole data layer from SQLite to PostgreSQL.** The stack is now

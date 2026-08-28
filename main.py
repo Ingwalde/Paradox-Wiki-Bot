@@ -38,6 +38,18 @@ async def run_bot() -> None:
     # execute off this one.
     await asyncio.to_thread(db_migrate.run_migrations)
 
+    # The seed only loads on a fresh volume. On an existing one the writable
+    # tables migrate but the game data may be absent -- warn loudly and let
+    # /health stay 503 (it checks the same thing) so a deploy fails rather than
+    # shipping a bot whose every search errors on a missing `pages` table.
+    if not await storage.game_data_ready():
+        logger.critical(
+            "The 'pages' table is missing or empty: this volume was never "
+            "seeded. The bot will run but /health stays 503 and every search "
+            "will fail. Seed the database -- see README -> Дані "
+            "(databases/seed.sql.gz, or scripts/import_wiki.py)."
+        )
+
     bot = ParadoxBot()
     loop = asyncio.get_running_loop()
 

@@ -273,6 +273,31 @@ async def check_db() -> bool:
         return False
 
 
+async def game_data_ready() -> bool:
+    """Return whether the seeded game data is present.
+
+    The seed (databases/seed.sql.gz) is loaded by the Postgres image only on a
+    fresh volume. On a volume that already exists it is silently skipped, so the
+    bot can come up with the writable tables migrated but no `pages` at all --
+    every search would then fail with "relation pages does not exist" while the
+    bot otherwise looks healthy. Both /health and the startup check use this so
+    that state is caught instead of shipped.
+
+    True only if the `pages` table exists and has at least one row; missing or
+    empty is False. `to_regclass` returns NULL for a missing table rather than
+    raising, so a missing table is an ordinary False, not an error.
+    """
+    try:
+        async with asyncio.timeout(settings.db_health_timeout_seconds):
+            async with get_engine().connect() as conn:
+                if await conn.scalar(text("SELECT to_regclass('public.pages')")) is None:
+                    return False
+                return bool(await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM pages)")))
+    except Exception:
+        logger.warning("Game-data readiness check failed", exc_info=True)
+        return False
+
+
 async def wait_for_db() -> None:
     """Block until the database answers, with exponential backoff.
 

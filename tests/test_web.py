@@ -23,11 +23,17 @@ def _fetch(port: int) -> str:
         return str(resp.read().decode())
 
 
-def _stub_check_db(monkeypatch: pytest.MonkeyPatch, healthy: bool) -> None:
+def _stub_check_db(
+    monkeypatch: pytest.MonkeyPatch, healthy: bool, *, seeded: bool = True
+) -> None:
     async def fake_check_db() -> bool:
         return healthy
 
+    async def fake_game_data_ready() -> bool:
+        return seeded
+
     monkeypatch.setattr(storage, "check_db", fake_check_db)
+    monkeypatch.setattr(storage, "game_data_ready", fake_game_data_ready)
 
 
 def test_app_exposes_the_expected_paths() -> None:
@@ -66,6 +72,19 @@ def test_health_is_503_when_the_database_is_unreachable(monkeypatch: pytest.Monk
     async def run() -> None:
         response = await health(None)  # type: ignore[arg-type]
         assert response.status == 503
+
+    asyncio.run(run())
+
+
+def test_health_is_503_when_the_volume_was_never_seeded(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Database reachable, but no game data: the bot must read unhealthy so a
+    # deploy fails instead of shipping a bot whose every search errors.
+    _stub_check_db(monkeypatch, healthy=True, seeded=False)
+
+    async def run() -> None:
+        response = await health(None)  # type: ignore[arg-type]
+        assert response.status == 503
+        assert "seed" in response.text
 
     asyncio.run(run())
 
