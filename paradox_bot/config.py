@@ -66,6 +66,31 @@ def _parse_int(raw: str, *, name: str) -> int | None:
         return None
 
 
+def _build_database_url() -> str:
+    """Resolve the asyncpg SQLAlchemy URL for the Postgres database.
+
+    An explicit DATABASE_URL wins; otherwise it is assembled from the POSTGRES_*
+    parts the official postgres image also reads, so a single .env drives both
+    the database container and the bot. The `+asyncpg` driver is forced on so
+    every caller gets an async engine regardless of how the URL was supplied.
+    """
+    explicit = os.getenv("DATABASE_URL", "").strip()
+    if explicit:
+        # Normalise a bare postg:// or postgresql:// URL onto the async driver.
+        for prefix in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+            if explicit.startswith(prefix):
+                return "postgresql+asyncpg://" + explicit[len(prefix) :]
+        return explicit
+
+    host = os.getenv("POSTGRES_HOST", "postgres").strip() or "postgres"
+    port = os.getenv("POSTGRES_PORT", "5432").strip() or "5432"
+    name = os.getenv("POSTGRES_DB", "paradox").strip() or "paradox"
+    user = os.getenv("POSTGRES_USER", "paradox").strip() or "paradox"
+    password = os.getenv("POSTGRES_PASSWORD", "").strip()
+    credentials = f"{user}:{password}" if password else user
+    return f"postgresql+asyncpg://{credentials}@{host}:{port}/{name}"
+
+
 @dataclass
 class Settings:
     """Bot configuration read once from the environment at startup.
@@ -82,6 +107,18 @@ class Settings:
     bot_prefix: str = "-"
     server_port: int = 8080
     dev_guild_id: int | None = None
+
+    # PostgreSQL connection. Built once from the environment (see
+    # _build_database_url); every module reaches the database through the async
+    # engine paradox_bot.storage opens from this URL.
+    database_url: str = field(default_factory=_build_database_url)
+    # Startup can race the database container coming up; retry the first
+    # connection this many times with exponential backoff before giving up.
+    db_connect_retries: int = 10
+    db_connect_base_delay: float = 0.5
+    # Upper bound on how long a /health SELECT 1 may take before it is treated
+    # as the database being unreachable.
+    db_health_timeout_seconds: float = 3.0
 
     search_result_limit: int = 7
     search_max_results: int = 35
@@ -134,7 +171,7 @@ class Settings:
         return cls(
             token=os.getenv("TOKEN", "").strip(),
             log_channel_id=log_channel_id,
-            db_dir=Path(os.getenv("DB_DIR", "databases")),
+            database_url=_build_database_url(),
             data_dir=data_dir,
             upload_db_path=data_dir / "pdx_tools.db",
             feedback_db_path=data_dir / "feedback.db",

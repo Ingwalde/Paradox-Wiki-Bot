@@ -1,6 +1,30 @@
 name: paradox-bot
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: paradox-postgres
+    restart: unless-stopped
+    # Credentials and database name come from .env — never hardcoded here — and
+    # are shared with the bot, which builds its connection URL from the same
+    # POSTGRES_* values.
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-paradox}
+      POSTGRES_USER: ${POSTGRES_USER:-paradox}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # Internal only — the bot reaches Postgres over the compose network. The
+    # port is deliberately not published to the host.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-paradox} -d ${POSTGRES_DB:-paradox}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   paradox-bot:
     build:
       context: .
@@ -14,9 +38,14 @@ services:
     env_file:
       - .env
     environment:
-      # Runtime SQLite files live on the volume below, not in the image layer,
-      # so uploads/feedback/stats survive a redeploy.
+      # Reach Postgres by its compose service name over the internal network.
+      POSTGRES_HOST: postgres
+      # Logs live on the volume below, not in the image layer, so they survive
+      # a redeploy.
       DATA_DIR: /app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8080:8080"  # keep-alive/health, for host-side uptime monitoring
     volumes:
@@ -27,4 +56,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      # Postgres startup plus Alembic migrations can take a while on a cold
+      # volume; give the bot room before the first check counts against it.
+      start_period: 40s
+
+volumes:
+  pgdata:
