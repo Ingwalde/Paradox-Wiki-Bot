@@ -40,9 +40,10 @@ Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py 
 | `search_context.py` | Памʼять «яке повідомлення було відповіддю на який запит» (для ✅/❌) |
 | `ui/` | Презентація: `views.py` (кнопки, пагінація, embed'и), `text.py` (українські рядки) |
 | `cogs/` | Cog-и для статичних команд: `tools`, `help`, `extras` (`-random`/`-trending`/факт дня), `admin` (slash) |
-| `web.py` | Keep-alive/health HTTP-ендпоінт (aiohttp, у тому ж event loop); `/health` = 503, коли БД недоступна |
+| `web.py` | Keep-alive/health + `/metrics` HTTP-ендпоінти (aiohttp, у тому ж event loop); `/health` = 503, коли БД недоступна |
 | `storage.py` | Async-двигун SQLAlchemy, ORM-моделі, `StorageError`, `check_db`/`wait_for_db` |
 | `db_migrate.py` | Застосування Alembic-міграцій при старті бота |
+| `metrics.py` | Prometheus-лічильники й гістограма для `/metrics` |
 
 Залежності односторонні: `ui/` не знає про `bot.py`, коги не імпортують
 `ParadoxBot` (для `/admin status` є `Protocol` з трьох потрібних полів). Через
@@ -80,7 +81,9 @@ python main.py
 
 Бот піднімає keep-alive HTTP-ендпоінт на `PORT` (за замовчуванням 8080):
 `GET /` і `GET /health` повертають `200 I'm alive!`, коли БД відповідає, і
-`503`, коли дешевий `SELECT 1` не проходить.
+`503`, коли дешевий `SELECT 1` не проходить. `GET /metrics` віддає метрики
+Prometheus (пошуки, порожні результати, голоси, аплоади, помилки БД, тривалість
+пошуку) на тому ж застосунку.
 
 Локально бот очікує доступний PostgreSQL (див. `.env.example`); найпростіше —
 `docker compose up`, який піднімає і базу, і бота. При старті бот чекає на базу

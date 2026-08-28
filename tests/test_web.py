@@ -30,9 +30,23 @@ def _stub_check_db(monkeypatch: pytest.MonkeyPatch, healthy: bool) -> None:
     monkeypatch.setattr(storage, "check_db", fake_check_db)
 
 
-def test_app_exposes_both_paths() -> None:
+def test_app_exposes_the_expected_paths() -> None:
     paths = {route.resource.canonical for route in build_app().router.routes()}
-    assert paths == {"/", "/health"}
+    assert paths == {"/", "/health", "/metrics"}
+
+
+def test_metrics_endpoint_renders_prometheus_text() -> None:
+    from paradox_bot import metrics as metrics_module
+    from paradox_bot.web import metrics
+
+    async def run() -> None:
+        metrics_module.SEARCHES.labels(game="eu4").inc()
+        response = await metrics(None)  # type: ignore[arg-type]
+        assert response.status == 200
+        assert "text/plain" in response.headers["Content-Type"]
+        assert b"paradox_searches_total" in response.body
+
+    asyncio.run(run())
 
 
 def test_health_returns_the_liveness_string(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -25,6 +25,7 @@ repos:
           - SQLAlchemy[asyncio]>=2.0,<2.1
           - asyncpg>=0.29,<0.31
           - alembic>=1.13,<2.0
+          - prometheus-client>=0.20,<1.0
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

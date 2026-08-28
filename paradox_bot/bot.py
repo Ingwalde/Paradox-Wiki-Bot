@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 import discord
 from discord.ext import commands
 
-from paradox_bot import search_context
+from paradox_bot import metrics, search_context
 from paradox_bot.cogs.admin import AdminGroup
 from paradox_bot.cogs.extras import ExtrasCog
 from paradox_bot.cogs.help import HelpCog
@@ -153,6 +153,8 @@ class ParadoxBot(commands.Bot):
                 context["top_title"],
                 context["top_url"],
             )
+            metrics.VOTES.labels(vote=vote).inc()
         except StorageError:
+            metrics.DB_ERRORS.labels(operation="feedback").inc()
             logger.exception("Could not record feedback for message %s", payload.message_id)
 

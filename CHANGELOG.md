@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.0] - 2026-08-28
 
+### Added
+- Prometheus metrics at `GET /metrics`, on the same aiohttp app as `/health`
+  (not a separate `start_http_server` thread — that thread would report healthy
+  for a wedged event loop). Covers what exists today: searches per game, empty
+  results, ✅/❌ votes, uploads by outcome (success / duplicate / API rejection),
+  database errors by operation, and a search-latency histogram.
+
 ### Changed
 - **Migrated the whole data layer from SQLite to PostgreSQL.** The stack is now
   SQLAlchemy 2.0 (async) + asyncpg + Alembic against `postgres:16-alpine`, run

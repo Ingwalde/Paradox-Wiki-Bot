@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 from aiohttp import web
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from paradox_bot import storage
 from paradox_bot.config import settings
@@ -33,10 +34,16 @@ async def health(request: web.Request) -> web.Response:
     return web.Response(text="I'm alive!")
 
 
+async def metrics(request: web.Request) -> web.Response:
+    """Prometheus scrape endpoint, served from the bot's own event loop."""
+    return web.Response(body=generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
+
+
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
+    app.router.add_get("/metrics", metrics)
     return app
 
 

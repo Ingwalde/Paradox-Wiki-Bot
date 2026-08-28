@@ -8,12 +8,13 @@ cogs, events.
 from __future__ import annotations
 
 import logging
+import time
 
 import discord
 from discord import ui
 from discord.ext import commands
 
-from paradox_bot import search, search_context, stats
+from paradox_bot import metrics, search, search_context, stats
 from paradox_bot.config import settings
 from paradox_bot.feedback import FEEDBACK_EMOJIS
 from paradox_bot.games import GAMES
@@ -32,16 +33,23 @@ async def perform_search(
         await ctx.send(f"❌ Запит задовгий (максимум {settings.max_query_length} символів).")
         return
 
+    started = time.perf_counter()
     try:
         pages = await search.search_pages(game_key, query, limit=settings.search_max_results)
     except StorageError:
+        metrics.DB_ERRORS.labels(operation="search").inc()
         logger.exception("Database search failed for %s: %r", game_key, query)
         await ctx.send("⚠️ Не вдалося виконати пошук. Спробуйте пізніше.")
         return
+    metrics.SEARCH_DURATION.observe(time.perf_counter() - started)
+    metrics.SEARCHES.labels(game=game_key).inc()
+    if not pages:
+        metrics.EMPTY_RESULTS.labels(game=game_key).inc()
 
     try:
         await stats.record_search(game_key, query)
     except StorageError:
+        metrics.DB_ERRORS.labels(operation="stats").inc()
         logger.exception("Could not record search stats for %s: %r", game_key, query)
 
     view: ui.View | None = None
@@ -60,6 +68,7 @@ async def perform_search(
         try:
             suggestions = await search.suggest_similar(game_key, query)
         except StorageError:
+            metrics.DB_ERRORS.labels(operation="suggest").inc()
             logger.exception("Fuzzy suggestion lookup failed for %s: %r", game_key, query)
             suggestions = []
         if suggestions:
