@@ -1,84 +1,333 @@
-"""Shared SQLite connection handling for the bot's writable databases.
+"""Async PostgreSQL access: the engine, the ORM models, and StorageError.
 
-The read-only game databases in `settings.db_dir` are opened by
-`paradox_bot.search` with their own `mode=ro` URI; this module is only for the
-three files the bot writes to.
+Everything the bot writes to lives here. A single async engine is opened from
+`settings.database_url`; the `session()` context manager is the one way in and
+out of a transaction. Driver failures (asyncpg / SQLAlchemy) are caught at this
+boundary and re-raised as `StorageError`, so no module outside this package has
+to import the database driver to handle them.
+
+The read-only game data (Pages, Redirects) shares the same database and the
+same models file, but its rows are seeded into Postgres out of band (see
+`databases/seed.sql.gz`), not created by Alembic.
 """
 
 from __future__ import annotations
 
-import sqlite3
-from pathlib import Path
+import asyncio
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime
+
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Identity,
+    Index,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from paradox_bot.config import settings
 
-UPLOADS_SCHEMA = """
-CREATE TABLE IF NOT EXISTS Uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    filename TEXT,
-    url TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-"""
-
-FEEDBACK_SCHEMA = """
-CREATE TABLE IF NOT EXISTS Feedback (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT,
-    game_key TEXT,
-    query TEXT,
-    vote TEXT,
-    top_title TEXT,
-    top_url TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-"""
-
-SEARCH_LOG_SCHEMA = """
-CREATE TABLE IF NOT EXISTS SearchLog (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    game_key TEXT,
-    query TEXT,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-)
-"""
-
-# Paths whose schema this process has already applied. The DDL used to run on
-# every single write; it only ever needs to run once per file per process.
-_schema_applied: set[Path] = set()
+logger = logging.getLogger(__name__)
 
 
-def reset_schema_cache() -> None:
-    """Forget which files have been initialised. For tests."""
-    _schema_applied.clear()
+class StorageError(Exception):
+    """A database operation failed.
 
-
-def connect(path: Path, schema: str) -> sqlite3.Connection:
-    """Open a writable database with WAL enabled and its schema in place.
-
-    WAL matters for more than concurrency here: the container is stopped with
-    SIGTERM and killed nine seconds later, and a write-ahead log recovers from
-    an abrupt termination far more reliably than the default rollback journal.
-    `synchronous=NORMAL` is the standard pairing — durable across a process
-    crash, which is the failure being defended against, while not paying an
-    fsync per transaction.
-
-    Blocking; call via asyncio.to_thread.
+    The one exception the rest of the bot catches around persistence. The
+    storage layer translates the driver's own exceptions (asyncpg errors,
+    SQLAlchemy errors) into this so `cogs/`, `bot.py`, `search_flow.py` and the
+    rest never import the driver just to name what they are guarding against.
     """
-    conn = sqlite3.connect(path, timeout=settings.db_timeout_seconds)
-    try:
-        # journal_mode is persisted in the file, so this is a no-op after the
-        # first time; synchronous is per-connection and must be set each time.
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
 
-        resolved = Path(path).resolve()
-        if resolved not in _schema_applied:
-            conn.executescript(schema)
-            conn.commit()
-            _schema_applied.add(resolved)
+
+class Base(DeclarativeBase):
+    """Declarative base shared by every model in the package."""
+
+
+def _pk() -> Mapped[int]:
+    """A BIGINT primary key that Postgres fills in (GENERATED ALWAYS AS IDENTITY)."""
+    return mapped_column(BigInteger, Identity(always=True), primary_key=True)
+
+
+def _created_at() -> Mapped[datetime]:
+    """A non-null timestamptz that defaults to the row's insertion time."""
+    return mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Uploads(Base):
+    """One row per successful pdx.tools upload the bot has recorded."""
+
+    __tablename__ = "uploads"
+
+    id: Mapped[int] = _pk()
+    user_id: Mapped[str | None] = mapped_column(Text)
+    filename: Mapped[str | None] = mapped_column(Text, index=True)
+    url: Mapped[str | None] = mapped_column(Text)
+    timestamp: Mapped[datetime] = _created_at()
+
+
+class Feedback(Base):
+    """One ✅/❌ vote per user per result message.
+
+    The (message_id, user_id) unique constraint is what makes a repeated vote an
+    UPDATE rather than a new row: toggling a reaction off and on must not inflate
+    the count. record_feedback relies on it for its ON CONFLICT clause.
+    """
+
+    __tablename__ = "feedback"
+    __table_args__ = (
+        UniqueConstraint("message_id", "user_id", name="uq_feedback_message_user"),
+    )
+
+    id: Mapped[int] = _pk()
+    message_id: Mapped[str | None] = mapped_column(Text)
+    user_id: Mapped[str | None] = mapped_column(Text)
+    game_key: Mapped[str | None] = mapped_column(Text)
+    query: Mapped[str | None] = mapped_column(Text)
+    vote: Mapped[str | None] = mapped_column(Text)
+    top_title: Mapped[str | None] = mapped_column(Text)
+    top_url: Mapped[str | None] = mapped_column(Text)
+    timestamp: Mapped[datetime] = _created_at()
+
+
+class SearchLog(Base):
+    """One row per search, for the -trending command."""
+
+    __tablename__ = "search_log"
+
+    id: Mapped[int] = _pk()
+    game_key: Mapped[str | None] = mapped_column(Text, index=True)
+    query: Mapped[str | None] = mapped_column(Text)
+    timestamp: Mapped[datetime] = _created_at()
+
+
+class Pages(Base):
+    """A game's wiki content pages. Read-only at runtime; seeded out of band.
+
+    Every game's pages share this table, told apart by game_key (SQLite gave
+    each game its own file; Postgres holds them together). The rows are loaded
+    from databases/seed.sql.gz on first boot and refreshed offline by
+    scripts/import_wiki.py — the bot never writes here.
+    """
+
+    __tablename__ = "pages"
+    __table_args__ = (
+        UniqueConstraint("game_key", "title", name="uq_pages_game_title"),
+        UniqueConstraint("game_key", "url", name="uq_pages_game_url"),
+        Index("ix_pages_game_key", "game_key"),
+    )
+
+    # GENERATED BY DEFAULT (not ALWAYS): the seed loads explicit ids from the
+    # dump, which an ALWAYS identity would reject.
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    game_key: Mapped[str] = mapped_column(Text, nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(Text)
+    image_url: Mapped[str | None] = mapped_column(Text)
+    lang: Mapped[str | None] = mapped_column(Text)
+    imported_at: Mapped[datetime] = _created_at()
+
+
+class Redirects(Base):
+    """Redirect titles pointing at a page URL (possibly with a #fragment).
+
+    No foreign key to Pages: target_page_url may carry a fragment that is not
+    itself a page URL, so the search join strips the fragment instead of
+    relying on referential integrity (SQLite never enforced this FK anyway).
+    """
+
+    __tablename__ = "redirects"
+    __table_args__ = (
+        Index("ix_redirects_game_key", "game_key"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    game_key: Mapped[str] = mapped_column(Text, nullable=False)
+    redirect_title: Mapped[str | None] = mapped_column(Text)
+    redirect_url: Mapped[str | None] = mapped_column(Text)
+    target_page_url: Mapped[str | None] = mapped_column(Text)
+
+
+class ApiCache(Base):
+    """Cache for live MediaWiki API responses — deliberately unused for now.
+
+    Nothing reads or writes this table yet. It is created ahead of the feature
+    it belongs to: the next version adds a live path to the wikis' api.php with
+    a response cache and a TTL, and this is where those responses will land
+    (keyed by `query_key`, expiring at `expires_at`). It exists in the schema
+    now so that path is a code change, not another migration. If you are looking
+    for who populates it: no one, yet, and that is intentional.
+    """
+
+    __tablename__ = "api_cache"
+    __table_args__ = (
+        Index("ix_api_cache_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = _pk()
+    query_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True, index=True)
+    response_data: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --- Engine and sessions -----------------------------------------------------
+
+_engine: AsyncEngine | None = None
+_sessionmaker: async_sessionmaker[AsyncSession] | None = None
+
+
+def init_engine(url: str | None = None) -> AsyncEngine:
+    """Create (or replace) the process-wide async engine and session factory.
+
+    Idempotent for the default URL: called again with no argument it keeps the
+    existing engine. Tests pass an explicit URL to point the same machinery at a
+    throwaway database.
+    """
+    global _engine, _sessionmaker
+    if url is None and _engine is not None:
+        return _engine
+    resolved = url or settings.database_url
+    # pool_pre_ping recovers transparently when Postgres was restarted under the
+    # bot (a home server reboots); a dead pooled connection is discarded and a
+    # fresh one opened instead of surfacing as a query error.
+    _engine = create_async_engine(resolved, pool_pre_ping=True, future=True)
+    _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
+    return _engine
+
+
+def get_engine() -> AsyncEngine:
+    """Return the async engine, opening it from settings on first use."""
+    if _engine is None:
+        init_engine()
+    assert _engine is not None
+    return _engine
+
+
+def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
+    """Return the session factory, opening the engine on first use."""
+    if _sessionmaker is None:
+        init_engine()
+    assert _sessionmaker is not None
+    return _sessionmaker
+
+
+async def dispose_engine() -> None:
+    """Close the engine's connection pool. For a clean shutdown and for tests."""
+    global _engine, _sessionmaker
+    if _engine is not None:
+        await _engine.dispose()
+    _engine = None
+    _sessionmaker = None
+
+
+@asynccontextmanager
+async def session() -> AsyncIterator[AsyncSession]:
+    """Yield a session inside a transaction, committing on success.
+
+    Any driver/ORM failure is rolled back and re-raised as StorageError, so the
+    single `except StorageError` in each caller catches everything this layer
+    can go wrong with.
+    """
+    factory = get_sessionmaker()
+    async with factory() as sess:
+        try:
+            yield sess
+            await sess.commit()
+        except SQLAlchemyError as exc:
+            await sess.rollback()
+            raise StorageError(str(exc)) from exc
+        except Exception:
+            await sess.rollback()
+            raise
+
+
+async def check_db() -> bool:
+    """Return whether a trivial query succeeds within the health timeout.
+
+    Used by the /health endpoint: a cheap SELECT 1 with a short deadline, so a
+    wedged or unreachable database turns the health check red instead of the bot
+    reporting healthy while it cannot serve anything.
+    """
+    try:
+        async with asyncio.timeout(settings.db_health_timeout_seconds):
+            async with get_engine().connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        return True
     except Exception:
-        conn.close()
-        raise
-    return conn
+        logger.warning("Database health check failed", exc_info=True)
+        return False
+
+
+async def game_data_ready() -> bool:
+    """Return whether the seeded game data is present.
+
+    The seed (databases/seed.sql.gz) is loaded by the Postgres image only on a
+    fresh volume. On a volume that already exists it is silently skipped, so the
+    bot can come up with the writable tables migrated but no `pages` at all --
+    every search would then fail with "relation pages does not exist" while the
+    bot otherwise looks healthy. Both /health and the startup check use this so
+    that state is caught instead of shipped.
+
+    True only if the `pages` table exists and has at least one row; missing or
+    empty is False. `to_regclass` returns NULL for a missing table rather than
+    raising, so a missing table is an ordinary False, not an error.
+    """
+    try:
+        async with asyncio.timeout(settings.db_health_timeout_seconds):
+            async with get_engine().connect() as conn:
+                if await conn.scalar(text("SELECT to_regclass('public.pages')")) is None:
+                    return False
+                return bool(await conn.scalar(text("SELECT EXISTS (SELECT 1 FROM pages)")))
+    except Exception:
+        logger.warning("Game-data readiness check failed", exc_info=True)
+        return False
+
+
+async def wait_for_db() -> None:
+    """Block until the database answers, with exponential backoff.
+
+    The bot starts alongside the Postgres container and can win the race, so the
+    first connection is retried rather than crashing the process on a database
+    that is only seconds away from being ready.
+
+    Raises:
+        StorageError: If the database is still unreachable after the configured
+            number of attempts.
+    """
+    delay = settings.db_connect_base_delay
+    last_error: Exception | None = None
+    for attempt in range(1, settings.db_connect_retries + 1):
+        try:
+            async with get_engine().connect() as conn:
+                await conn.execute(text("SELECT 1"))
+            logger.info("Database reachable after %d attempt(s)", attempt)
+            return
+        except Exception as exc:  # noqa: BLE001 - retried, and re-raised below
+            last_error = exc
+            logger.warning(
+                "Database not ready (attempt %d/%d): %s",
+                attempt,
+                settings.db_connect_retries,
+                exc,
+            )
+            if attempt < settings.db_connect_retries:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 16.0)
+    raise StorageError(
+        f"database unreachable after {settings.db_connect_retries} attempts: {last_error}"
+    )

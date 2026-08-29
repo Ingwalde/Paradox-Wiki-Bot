@@ -6,7 +6,6 @@ Gated by Discord's own default_permissions(administrator=True) on the group
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Protocol
@@ -70,7 +69,7 @@ class AdminGroup(app_commands.Group):
             "",
         ]
         for key, game in GAMES.items():
-            stats = await asyncio.to_thread(search.db_stats, key)
+            stats = await search.db_stats(key)
             if stats is None:
                 lines.append(f"**{game.name}**: БД відсутня")
                 continue
@@ -87,7 +86,7 @@ class AdminGroup(app_commands.Group):
     @app_commands.command(name="feedback", description="Останні ✅/❌ голоси")
     @app_commands.describe(limit="Скільки останніх голосів показати (за замовчуванням 10)")
     async def feedback_cmd(self, interaction: discord.Interaction, limit: int = 10) -> None:
-        rows = await asyncio.to_thread(feedback.recent_feedback, limit)
+        rows = await feedback.recent_feedback(limit)
         if not rows:
             await interaction.response.send_message("Ще немає жодного голосу.", ephemeral=True)
             return

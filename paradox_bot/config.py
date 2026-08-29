@@ -66,28 +66,63 @@ def _parse_int(raw: str, *, name: str) -> int | None:
         return None
 
 
+def _build_database_url() -> str:
+    """Resolve the asyncpg SQLAlchemy URL for the Postgres database.
+
+    An explicit DATABASE_URL wins; otherwise it is assembled from the POSTGRES_*
+    parts the official postgres image also reads, so a single .env drives both
+    the database container and the bot. The `+asyncpg` driver is forced on so
+    every caller gets an async engine regardless of how the URL was supplied.
+    """
+    explicit = os.getenv("DATABASE_URL", "").strip()
+    if explicit:
+        # Normalise a bare postg:// or postgresql:// URL onto the async driver.
+        for prefix in ("postgresql+asyncpg://", "postgresql://", "postgres://"):
+            if explicit.startswith(prefix):
+                return "postgresql+asyncpg://" + explicit[len(prefix) :]
+        return explicit
+
+    host = os.getenv("POSTGRES_HOST", "postgres").strip() or "postgres"
+    port = os.getenv("POSTGRES_PORT", "5432").strip() or "5432"
+    name = os.getenv("POSTGRES_DB", "paradox").strip() or "paradox"
+    user = os.getenv("POSTGRES_USER", "paradox").strip() or "paradox"
+    password = os.getenv("POSTGRES_PASSWORD", "").strip()
+    credentials = f"{user}:{password}" if password else user
+    return f"postgresql+asyncpg://{credentials}@{host}:{port}/{name}"
+
+
 @dataclass
 class Settings:
     """Bot configuration read once from the environment at startup.
 
     Not frozen: tests monkeypatch individual fields on the single shared
-    `settings` instance (e.g. `monkeypatch.setattr(settings, "db_dir", x)`).
+    `settings` instance (e.g. `monkeypatch.setattr(settings, "log_channel_id", x)`).
     Every module reads through that one instance, so the mutation is visible
     everywhere regardless of how each module imported it.
     """
 
     token: str = ""
     log_channel_id: int | None = None
-    db_dir: Path = field(default_factory=lambda: Path("databases"))
     bot_prefix: str = "-"
     server_port: int = 8080
     dev_guild_id: int | None = None
+
+    # PostgreSQL connection. Built once from the environment (see
+    # _build_database_url); every module reaches the database through the async
+    # engine paradox_bot.storage opens from this URL.
+    database_url: str = field(default_factory=_build_database_url)
+    # Startup can race the database container coming up; retry the first
+    # connection this many times with exponential backoff before giving up.
+    db_connect_retries: int = 10
+    db_connect_base_delay: float = 0.5
+    # Upper bound on how long a /health SELECT 1 may take before it is treated
+    # as the database being unreachable.
+    db_health_timeout_seconds: float = 3.0
 
     search_result_limit: int = 7
     search_max_results: int = 35
     max_buttons: int = 5
     max_query_length: int = 100
-    db_timeout_seconds: float = 5.0
 
     # Discord rejects an embed field value longer than this.
     embed_field_limit: int = 1024
@@ -98,13 +133,6 @@ class Settings:
     upload_cooldown_uses: int = 1
     upload_cooldown_seconds: float = 60.0
 
-    # Runtime state, unlike the read-only game databases in db_dir. Kept under
-    # data_dir so a container can mount one volume and survive a redeploy;
-    # baked into the image they would be wiped on every deploy.
-    data_dir: Path = field(default_factory=lambda: Path("."))
-    upload_db_path: Path = field(default_factory=lambda: Path("pdx_tools.db"))
-    feedback_db_path: Path = field(default_factory=lambda: Path("feedback.db"))
-    stats_db_path: Path = field(default_factory=lambda: Path("stats.db"))
     upload_wait_seconds: float = 60.0
     max_save_bytes: int = 25 * 1024 * 1024
 
@@ -129,16 +157,10 @@ class Settings:
             os.getenv("DAILY_FACT_CHANNEL_ID", ""), name="DAILY_FACT_CHANNEL_ID"
         )
 
-        data_dir = Path(os.getenv("DATA_DIR", "."))
-
         return cls(
             token=os.getenv("TOKEN", "").strip(),
             log_channel_id=log_channel_id,
-            db_dir=Path(os.getenv("DB_DIR", "databases")),
-            data_dir=data_dir,
-            upload_db_path=data_dir / "pdx_tools.db",
-            feedback_db_path=data_dir / "feedback.db",
-            stats_db_path=data_dir / "stats.db",
+            database_url=_build_database_url(),
             bot_prefix=os.getenv("BOT_PREFIX", "-"),
             server_port=port if port is not None else 8080,
             dev_guild_id=dev_guild_id,

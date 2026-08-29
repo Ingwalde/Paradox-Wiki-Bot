@@ -8,7 +8,6 @@ going through it here would make every test after the fourth fail on cooldown.
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 
 import pytest
 
@@ -16,6 +15,7 @@ from paradox_bot import stats
 from paradox_bot.cogs.extras import ExtrasCog, _build_page_embed, _unknown_game_message
 from paradox_bot.config import settings
 from paradox_bot.games import GAMES
+from paradox_bot.storage import StorageError
 from tests.conftest import FakeContext, FakeSendable, insert_page
 
 
@@ -58,35 +58,35 @@ def test_random_rejects_unknown_game(cog: ExtrasCog, ctx: FakeContext) -> None:
     assert not ctx.embeds
 
 
-def test_random_is_case_insensitive_about_the_game(
+async def test_random_is_case_insensitive_about_the_game(
     cog: ExtrasCog, ctx: FakeContext, game_db
 ) -> None:
-    insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
-    asyncio.run(cog.random_command.callback(cog, ctx, "TEST"))
+    await insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
+    await cog.random_command.callback(cog, ctx, "TEST")
     assert ctx.embeds[0].title == "Absolutism"
 
 
-def test_random_sends_a_page_embed(cog: ExtrasCog, ctx: FakeContext, game_db) -> None:
-    insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
-    asyncio.run(cog.random_command.callback(cog, ctx, "test"))
+async def test_random_sends_a_page_embed(cog: ExtrasCog, ctx: FakeContext, game_db) -> None:
+    await insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
+    await cog.random_command.callback(cog, ctx, "test")
     embed = ctx.embeds[0]
     assert embed.title == "Absolutism"
     assert "Випадкова стаття" in embed.footer.text
 
 
-def test_random_reports_empty_database(cog: ExtrasCog, ctx: FakeContext, game_db) -> None:
-    asyncio.run(cog.random_command.callback(cog, ctx, "test"))
+async def test_random_reports_empty_database(cog: ExtrasCog, ctx: FakeContext, game_db) -> None:
+    await cog.random_command.callback(cog, ctx, "test")
     assert "немає даних" in ctx.texts[0]
 
 
-def test_random_survives_a_database_error(
+async def test_random_survives_a_database_error(
     cog: ExtrasCog, ctx: FakeContext, game_db, monkeypatch
 ) -> None:
     async def boom(_game_key: str) -> None:
-        raise sqlite3.OperationalError("disk I/O error")
+        raise StorageError("connection reset")
 
-    monkeypatch.setattr("paradox_bot.cogs.extras.random_page_async", boom)
-    asyncio.run(cog.random_command.callback(cog, ctx, "test"))
+    monkeypatch.setattr("paradox_bot.cogs.extras.search.random_page", boom)
+    await cog.random_command.callback(cog, ctx, "test")
     assert "Не вдалося" in ctx.texts[0]
 
 
@@ -95,23 +95,17 @@ def test_trending_rejects_unknown_game(cog: ExtrasCog, ctx: FakeContext) -> None
     assert "Невідома гра" in ctx.texts[0]
 
 
-def test_trending_reports_no_data(
-    cog: ExtrasCog, ctx: FakeContext, tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    asyncio.run(cog.trending_command.callback(cog, ctx, "eu4"))
+async def test_trending_reports_no_data(cog: ExtrasCog, ctx: FakeContext, db) -> None:
+    await cog.trending_command.callback(cog, ctx, "eu4")
     assert "Ще немає даних" in ctx.texts[0]
 
 
-def test_trending_lists_queries_by_frequency(
-    cog: ExtrasCog, ctx: FakeContext, tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "prussia")
+async def test_trending_lists_queries_by_frequency(cog: ExtrasCog, ctx: FakeContext, db) -> None:
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "prussia")
 
-    asyncio.run(cog.trending_command.callback(cog, ctx, "eu4"))
+    await cog.trending_command.callback(cog, ctx, "eu4")
 
     description = ctx.embeds[0].description
     assert "1. **absolutism** (2)" in description
@@ -128,16 +122,16 @@ class _FakeBot:
         return self._channel
 
 
-def test_daily_fact_posts_a_page(cog: ExtrasCog, game_db, monkeypatch) -> None:
-    insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
+async def test_daily_fact_posts_a_page(cog: ExtrasCog, game_db, monkeypatch) -> None:
+    await insert_page(game_db, "Absolutism", "https://wiki/Absolutism")
     channel = FakeSendable()
     monkeypatch.setattr(settings, "daily_fact_channel_id", 123)
     monkeypatch.setattr(cog, "bot", _FakeBot(channel))
-    # Every game but the temp one has a real database; pin it to the temp game
-    # so the assertion does not depend on which game random.choice lands on.
+    # Pin the game so the assertion does not depend on which game random.choice
+    # lands on (only the temp game has rows in the test database).
     monkeypatch.setattr("paradox_bot.cogs.extras.random.choice", lambda _seq: "test")
 
-    asyncio.run(cog.daily_fact())
+    await cog.daily_fact()
 
     assert channel.embeds[0].title == "Absolutism"
     assert "Факт дня" in channel.embeds[0].footer.text
@@ -166,11 +160,11 @@ def test_daily_fact_skips_a_non_messageable_channel(cog: ExtrasCog, monkeypatch)
 
 def test_daily_fact_survives_a_database_error(cog: ExtrasCog, monkeypatch) -> None:
     async def boom(_game_key: str) -> None:
-        raise sqlite3.OperationalError("disk I/O error")
+        raise StorageError("connection reset")
 
     channel = FakeSendable()
     monkeypatch.setattr(settings, "daily_fact_channel_id", 123)
     monkeypatch.setattr(cog, "bot", _FakeBot(channel))
-    monkeypatch.setattr("paradox_bot.cogs.extras.random_page_async", boom)
+    monkeypatch.setattr("paradox_bot.cogs.extras.search.random_page", boom)
     asyncio.run(cog.daily_fact())
     assert channel.sent == []

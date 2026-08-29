@@ -12,22 +12,19 @@ from paradox_bot import pdx_tools
 from paradox_bot.config import settings
 
 
-def test_find_prior_upload_url_returns_most_recent(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/new")
-    assert pdx_tools.find_prior_upload_url("save.eu4") == "https://pdx.tools/eu4/saves/new"
+async def test_find_prior_upload_url_returns_most_recent(db: None) -> None:
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/new")
+    assert await pdx_tools.find_prior_upload_url("save.eu4") == "https://pdx.tools/eu4/saves/new"
 
 
-def test_find_prior_upload_url_unknown_filename_returns_none(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
-    assert pdx_tools.find_prior_upload_url("other.eu4") is None
+async def test_find_prior_upload_url_unknown_filename_returns_none(db: None) -> None:
+    await pdx_tools.record_upload("user-1", "save.eu4", "https://pdx.tools/eu4/saves/old")
+    assert await pdx_tools.find_prior_upload_url("other.eu4") is None
 
 
-def test_find_prior_upload_url_no_table_yet_returns_none(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "upload_db_path", tmp_path / "pdx_tools.db")
-    assert pdx_tools.find_prior_upload_url("save.eu4") is None
+async def test_find_prior_upload_url_empty_returns_none(db: None) -> None:
+    assert await pdx_tools.find_prior_upload_url("save.eu4") is None
 
 
 def test_prepare_save_payload_passes_zip_through() -> None:
@@ -40,6 +37,18 @@ def test_prepare_save_payload_gzips_non_zip() -> None:
     payload = pdx_tools.prepare_save_payload(raw)
     assert payload != raw
     assert gzip.decompress(payload) == raw
+
+
+def test_prepare_save_payload_passes_gzip_through() -> None:
+    """An already-gzipped upload must not be gzipped a second time.
+
+    Compressing it again yielded a stream that unpacks into another gzip
+    stream rather than into the save, which pdx.tools cannot read.
+    """
+    save = b"plain text save, not a zip"
+    raw = gzip.compress(save)
+    assert pdx_tools.prepare_save_payload(raw) == raw
+    assert gzip.decompress(pdx_tools.prepare_save_payload(raw)) == save
 
 
 def test_extract_save_url_valid_json() -> None:

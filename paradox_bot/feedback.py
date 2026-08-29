@@ -7,15 +7,18 @@ used to carry is presentation -- it lives in ui/text.py.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
-from paradox_bot import storage
-from paradox_bot.config import settings
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from paradox_bot.storage import Feedback, session
 
 FEEDBACK_EMOJIS = {"✅": "up", "❌": "down"}
 
-def record_feedback(
+
+async def record_feedback(
+    message_id: str,
     user_id: str,
     game_key: str,
     query: str,
@@ -23,33 +26,51 @@ def record_feedback(
     top_title: str | None,
     top_url: str | None,
 ) -> None:
-    """Persist a ✅/❌ vote. Blocking; call via asyncio.to_thread."""
-    conn = storage.connect(settings.feedback_db_path, storage.FEEDBACK_SCHEMA)
-    try:
-        conn.execute(
-            "INSERT INTO Feedback (user_id, game_key, query, vote, top_title, top_url) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user_id, game_key, query, vote, top_title, top_url),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    """Persist a ✅/❌ vote, one per user per result message.
+
+    Voting again on the same message replaces the earlier vote rather than
+    adding a row: a user who switches ✅ to ❌ has one opinion, not two. The
+    (message_id, user_id) unique constraint drives the ON CONFLICT below.
+
+    Raises:
+        StorageError: If the write fails.
+    """
+    insert_stmt = pg_insert(Feedback).values(
+        message_id=message_id,
+        user_id=user_id,
+        game_key=game_key,
+        query=query,
+        vote=vote,
+        top_title=top_title,
+        top_url=top_url,
+    )
+    stmt = insert_stmt.on_conflict_do_update(
+        index_elements=[Feedback.message_id, Feedback.user_id],
+        set_={"vote": insert_stmt.excluded.vote, "timestamp": func.now()},
+    )
+    async with session() as sess:
+        await sess.execute(stmt)
 
 
-def recent_feedback(limit: int = 10) -> list[dict[str, Any]]:
-    """Return the most recent votes, newest first. Blocking; call via asyncio.to_thread."""
-    conn = storage.connect(settings.feedback_db_path, storage.FEEDBACK_SCHEMA)
-    try:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            "SELECT user_id, game_key, query, vote, top_title, top_url, timestamp "
-            "FROM Feedback ORDER BY id DESC LIMIT ?",
-            (limit,),
+async def recent_feedback(limit: int = 10) -> list[dict[str, Any]]:
+    """Return the most recent votes, newest first.
+
+    Raises:
+        StorageError: If the read fails.
+    """
+    stmt = (
+        select(
+            Feedback.user_id,
+            Feedback.game_key,
+            Feedback.query,
+            Feedback.vote,
+            Feedback.top_title,
+            Feedback.top_url,
+            Feedback.timestamp,
         )
-        return [dict(row) for row in cursor.fetchall()]
-    except sqlite3.OperationalError:
-        # Reachable only if the file was removed after this process cached its
-        # schema as applied; storage.connect() creates the table otherwise.
-        return []
-    finally:
-        conn.close()
+        .order_by(Feedback.timestamp.desc(), Feedback.id.desc())
+        .limit(limit)
+    )
+    async with session() as sess:
+        result = await sess.execute(stmt)
+        return [dict(row) for row in result.mappings()]

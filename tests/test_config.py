@@ -20,7 +20,6 @@ def test_settings_from_env_defaults(monkeypatch) -> None:
     for var in (
         "TOKEN",
         "LOG_CHANNEL_ID",
-        "DB_DIR",
         "BOT_PREFIX",
         "PORT",
         "DEV_GUILD_ID",

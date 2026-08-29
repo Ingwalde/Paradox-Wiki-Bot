@@ -49,16 +49,19 @@ Some behaviour that looks like a finding is a decision:
 
 - **Search queries and Discord user IDs are stored.** `-trending` needs the
   query log and the ✅/❌ feedback needs to attribute a vote. Both live in
-  SQLite files under `DATA_DIR`, which is gitignored. There is no retention
-  policy yet — that is tracked in [ROADMAP.md](ROADMAP.md), not a vulnerability
-  report.
+  PostgreSQL (the `search_log` and `feedback` tables), on an internal-only
+  container network. There is no retention policy yet — that is tracked in
+  [ROADMAP.md](ROADMAP.md), not a vulnerability report.
 - **Uploads are read fully into memory**, capped at 25 MB, and never written to
   disk. That cap is the denial-of-service control, together with the one upload
   per minute per user cooldown.
-- **The game databases are opened read-only** (`mode=ro` over a URI), and the
-  game key can only come from the `GAMES` registry, never from chat. Both exist
-  because an earlier version let command text reach `db_path()` and create
-  arbitrary files.
+- **The game data is read-only at runtime.** The bot never writes to the
+  `pages`/`redirects` tables (they are seeded and refreshed offline), and the
+  game key can only come from the `GAMES` registry, never from chat: every query
+  is a parameterised `WHERE game_key = ...`, so command text cannot reach the
+  database as SQL.
+- **The Postgres port is not published.** The bot reaches the database over the
+  compose network only; the password comes from `.env`, never hardcoded.
 - **The keep-alive endpoint answers unauthenticated.** It returns a fixed string
   and no state; it exists for uptime monitoring.
 

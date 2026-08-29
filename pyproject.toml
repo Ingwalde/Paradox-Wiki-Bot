@@ -1,6 +1,6 @@
 [project]
 name = "paradox-wiki-bot"
-version = "0.2.1"
+version = "0.3.0"
 description = "Discord bot that searches Ukrainian Paradox game wikis"
 authors = [{ name = "Ingwalde" }]
 license = { file = "LICENSE" }
@@ -9,6 +9,10 @@ dependencies = [
     "discord.py>=2.4,<3.0",
     "python-dotenv>=1.0,<2.0",
     "aiohttp>=3.9,<4.0",
+    "SQLAlchemy[asyncio]>=2.0,<2.1",
+    "asyncpg>=0.29,<0.31",
+    "alembic>=1.13,<2.0",
+    "prometheus-client>=0.20,<1.0",
 ]
 
 [tool.ruff]
@@ -23,6 +27,10 @@ target-version = "py311"
 # both invocations resolve `paradox_bot` the same way.
 pythonpath = ["."]
 testpaths = ["tests"]
+# Plain `async def test_*` are collected as coroutine tests without a per-test
+# decorator; each gets its own event loop, which asyncpg connections are bound
+# to.
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["paradox_bot"]
@@ -30,12 +38,15 @@ source = ["paradox_bot"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = false
-# Set just under the 80% the suite actually reaches, so an accidental drop
-# fails CI while ordinary churn does not. The remaining gap is almost entirely
-# bot.py's event handlers and direct Discord API calls, which are deliberately
-# untested -- raising this number means testing those, not thinning the gap
-# with mocks.
-fail_under = 78
+# Set just under the 91% the suite actually reaches, so an accidental drop
+# fails CI while ordinary churn does not. The remaining gap is now genuinely
+# what this comment used to claim it already was: bot.py's event handlers and
+# direct Discord API calls, deliberately untested. It said so while
+# search_flow.py -- the search use-case itself, and the largest single block of
+# untested code in the package -- sat at 21%, so the number was guarding
+# nothing where it mattered most. Raising it further means testing the gateway
+# handlers, not thinning the gap with mocks.
+fail_under = 88
 
 [tool.mypy]
 python_version = "3.11"

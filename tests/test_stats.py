@@ -1,56 +1,53 @@
 from __future__ import annotations
 
+from sqlalchemy import text
+
 from paradox_bot import stats
-from paradox_bot.config import settings
+from paradox_bot.storage import session
 
 
-def test_trending_no_table_yet_returns_empty(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    assert stats.trending("eu4") == []
+async def test_trending_empty_returns_empty(db: None) -> None:
+    assert await stats.trending("eu4") == []
 
 
-def test_trending_counts_and_orders_by_frequency(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("eu4", "prussia")
-    rows = stats.trending("eu4")
+async def test_trending_counts_and_orders_by_frequency(db: None) -> None:
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("eu4", "prussia")
+    rows = await stats.trending("eu4")
     assert rows[0]["query"] == "absolutism"
     assert rows[0]["count"] == 2
     assert rows[1]["query"] == "prussia"
     assert rows[1]["count"] == 1
 
 
-def test_trending_is_scoped_to_game(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
-    stats.record_search("eu4", "absolutism")
-    stats.record_search("hoi4", "germany")
-    rows = stats.trending("eu4")
+async def test_trending_groups_case_insensitively(db: None) -> None:
+    await stats.record_search("eu4", "Absolutism")
+    await stats.record_search("eu4", "absolutism")
+    rows = await stats.trending("eu4")
+    assert len(rows) == 1
+    assert rows[0]["count"] == 2
+
+
+async def test_trending_is_scoped_to_game(db: None) -> None:
+    await stats.record_search("eu4", "absolutism")
+    await stats.record_search("hoi4", "germany")
+    rows = await stats.trending("eu4")
     assert [r["query"] for r in rows] == ["absolutism"]
 
 
-def test_trending_respects_limit(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "stats_db_path", tmp_path / "stats.db")
+async def test_trending_respects_limit(db: None) -> None:
     for query in ("a", "b", "c", "d"):
-        stats.record_search("eu4", query)
-    assert len(stats.trending("eu4", limit=2)) == 2
+        await stats.record_search("eu4", query)
+    assert len(await stats.trending("eu4", limit=2)) == 2
 
 
-def test_trending_excludes_old_searches(tmp_path, monkeypatch) -> None:
-    db_file = tmp_path / "stats.db"
-    monkeypatch.setattr(settings, "stats_db_path", db_file)
-    stats.record_search("eu4", "absolutism")
-
-    import sqlite3
-
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.execute(
-            "UPDATE SearchLog SET timestamp = datetime('now', '-30 days') WHERE query = ?",
-            ("absolutism",),
+async def test_trending_excludes_old_searches(db: None) -> None:
+    await stats.record_search("eu4", "absolutism")
+    async with session() as sess:
+        await sess.execute(
+            text("UPDATE search_log SET timestamp = now() - interval '30 days' "
+                 "WHERE query = :q"),
+            {"q": "absolutism"},
         )
-        conn.commit()
-    finally:
-        conn.close()
-
-    assert stats.trending("eu4", days=7) == []
+    assert await stats.trending("eu4", days=7) == []

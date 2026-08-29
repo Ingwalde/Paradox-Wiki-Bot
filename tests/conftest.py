@@ -2,60 +2,74 @@
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Iterator
-from pathlib import Path
+import itertools
+import os
+from collections.abc import AsyncIterator
 
 import discord
 import pytest
+import pytest_asyncio
+from sqlalchemy import text
+
+# The writable tables live in Postgres. Point the tests at a throwaway database:
+# the CI `test` job supplies TEST_DATABASE_URL for its `postgres` service, and a
+# local run falls back to a developer's own instance.
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL", "postgresql+asyncpg://postgres@127.0.0.1:5432/paradox"
+)
 
 
-@pytest.fixture()
-def game_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
-    """Build a throwaway 'test' game database wired into paradox_bot.search."""
-    from paradox_bot.config import settings
+@pytest_asyncio.fixture()
+async def db() -> AsyncIterator[None]:
+    """Point storage at the test database with the schema present and empty.
+
+    A single engine per test (bound to that test's event loop, which asyncpg
+    requires), the ORM schema created if missing, and every table truncated so
+    each test starts from a clean slate regardless of order.
+    """
+    from paradox_bot import storage
+
+    storage.init_engine(TEST_DATABASE_URL)
+    engine = storage.get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(storage.Base.metadata.create_all)
+        tables = ", ".join(t.name for t in storage.Base.metadata.sorted_tables)
+        if tables:
+            await conn.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
+    try:
+        yield
+    finally:
+        await storage.dispose_engine()
+
+
+@pytest_asyncio.fixture()
+async def game_db(db: None, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[str]:
+    """Register a throwaway 'test' game and yield its key.
+
+    The pages/redirects tables come from the `db` fixture (empty per test); this
+    only registers the game so search/db_stats accept the 'test' key. Insert
+    rows with insert_page / insert_redirect, which write with game_key='test'.
+    """
     from paradox_bot.games import GAMES, GameInfo
 
-    db_dir = tmp_path / "databases"
-    db_dir.mkdir()
-    db_file = db_dir / "test.db"
-
-    conn = sqlite3.connect(db_file)
-    conn.executescript(
-        """
-        CREATE TABLE Pages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT UNIQUE,
-            url TEXT UNIQUE,
-            image_url TEXT,
-            lang TEXT
-        );
-        CREATE TABLE Redirects (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            redirect_title TEXT,
-            redirect_url TEXT,
-            target_page_url TEXT,
-            FOREIGN KEY(target_page_url) REFERENCES Pages(url)
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setattr(settings, "db_dir", db_dir)
     monkeypatch.setitem(
         GAMES,
         "test",
         GameInfo(key="test", name="Test Game", color=0, logo="", wiki_subdomain="test"),
     )
-    yield db_file
-    del GAMES["test"]
+    yield "test"
 
 
 class FakeMessage:
     """Stands in for a sent discord.Message: records what it was sent with."""
 
+    # search_flow keys its per-message search context off message.id, so a
+    # fake message needs one too. Only uniqueness matters, not the shape of a
+    # real Discord snowflake.
+    _next_id = itertools.count(1)
+
     def __init__(self, content: str | None, embed: object, view: object) -> None:
+        self.id = next(FakeMessage._next_id)
         self.content = content
         self.embed = embed
         self.view = view
@@ -141,26 +155,24 @@ def interaction() -> FakeInteraction:
     return FakeInteraction()
 
 
-def insert_page(db_file: Path, title: str, url: str, image_url: str = "") -> None:
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.execute(
-            "INSERT INTO Pages (title, url, image_url) VALUES (?, ?, ?)",
-            (title, url, image_url),
+async def insert_page(game_key: str, title: str, url: str, image_url: str = "") -> None:
+    from paradox_bot import storage
+
+    async with storage.session() as sess:
+        sess.add(
+            storage.Pages(game_key=game_key, title=title, url=url, image_url=image_url)
         )
-        conn.commit()
-    finally:
-        conn.close()
 
 
-def insert_redirect(db_file: Path, redirect_title: str, target_page_url: str) -> None:
-    conn = sqlite3.connect(db_file)
-    try:
-        conn.execute(
-            "INSERT INTO Redirects (redirect_title, redirect_url, target_page_url) "
-            "VALUES (?, '', ?)",
-            (redirect_title, target_page_url),
+async def insert_redirect(game_key: str, redirect_title: str, target_page_url: str) -> None:
+    from paradox_bot import storage
+
+    async with storage.session() as sess:
+        sess.add(
+            storage.Redirects(
+                game_key=game_key,
+                redirect_title=redirect_title,
+                redirect_url="",
+                target_page_url=target_page_url,
+            )
         )
-        conn.commit()
-    finally:
-        conn.close()

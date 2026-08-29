@@ -7,6 +7,7 @@ import urllib.request
 
 import pytest
 
+from paradox_bot import storage
 from paradox_bot.config import settings
 from paradox_bot.web import KeepAliveServer, build_app, health
 
@@ -22,12 +23,41 @@ def _fetch(port: int) -> str:
         return str(resp.read().decode())
 
 
-def test_app_exposes_both_paths() -> None:
+def _stub_check_db(
+    monkeypatch: pytest.MonkeyPatch, healthy: bool, *, seeded: bool = True
+) -> None:
+    async def fake_check_db() -> bool:
+        return healthy
+
+    async def fake_game_data_ready() -> bool:
+        return seeded
+
+    monkeypatch.setattr(storage, "check_db", fake_check_db)
+    monkeypatch.setattr(storage, "game_data_ready", fake_game_data_ready)
+
+
+def test_app_exposes_the_expected_paths() -> None:
     paths = {route.resource.canonical for route in build_app().router.routes()}
-    assert paths == {"/", "/health"}
+    assert paths == {"/", "/health", "/metrics"}
 
 
-def test_health_returns_the_liveness_string() -> None:
+def test_metrics_endpoint_renders_prometheus_text() -> None:
+    from paradox_bot import metrics as metrics_module
+    from paradox_bot.web import metrics
+
+    async def run() -> None:
+        metrics_module.SEARCHES.labels(game="eu4").inc()
+        response = await metrics(None)  # type: ignore[arg-type]
+        assert response.status == 200
+        assert "text/plain" in response.headers["Content-Type"]
+        assert b"paradox_searches_total" in response.body
+
+    asyncio.run(run())
+
+
+def test_health_returns_the_liveness_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_check_db(monkeypatch, healthy=True)
+
     async def run() -> None:
         response = await health(None)  # type: ignore[arg-type]
         assert response.status == 200
@@ -36,9 +66,33 @@ def test_health_returns_the_liveness_string() -> None:
     asyncio.run(run())
 
 
+def test_health_is_503_when_the_database_is_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_check_db(monkeypatch, healthy=False)
+
+    async def run() -> None:
+        response = await health(None)  # type: ignore[arg-type]
+        assert response.status == 503
+
+    asyncio.run(run())
+
+
+def test_health_is_503_when_the_volume_was_never_seeded(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Database reachable, but no game data: the bot must read unhealthy so a
+    # deploy fails instead of shipping a bot whose every search errors.
+    _stub_check_db(monkeypatch, healthy=True, seeded=False)
+
+    async def run() -> None:
+        response = await health(None)  # type: ignore[arg-type]
+        assert response.status == 503
+        assert "seed" in response.text
+
+    asyncio.run(run())
+
+
 def test_server_serves_and_then_releases_the_port(monkeypatch: pytest.MonkeyPatch) -> None:
     port = _free_port()
     monkeypatch.setattr(settings, "server_port", port)
+    _stub_check_db(monkeypatch, healthy=True)
 
     async def run() -> None:
         server = KeepAliveServer()

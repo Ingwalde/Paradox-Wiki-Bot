@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 
 import discord
 from discord.ext import commands
 
+from paradox_bot import metrics
 from paradox_bot.config import settings
 from paradox_bot.pdx_tools import (
     PdxDuplicateSaveError,
@@ -18,6 +18,7 @@ from paradox_bot.pdx_tools import (
     record_upload,
     upload_to_pdx_tools,
 )
+from paradox_bot.storage import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,9 @@ class ToolsCog(commands.Cog):
             await ctx.send("❌ Не вдалося прочитати вкладення. Спробуйте ще раз.")
             return
         except PdxDuplicateSaveError:
+            metrics.UPLOADS.labels(outcome="duplicate").inc()
             logger.info("Duplicate upload of %s: already on pdx.tools", attachment.filename)
-            prior_url = await asyncio.to_thread(find_prior_upload_url, attachment.filename)
+            prior_url = await find_prior_upload_url(attachment.filename)
             if prior_url:
                 await ctx.send(f"✅ Завантажено: {prior_url}")
             else:
@@ -88,6 +90,7 @@ class ToolsCog(commands.Cog):
                 )
             return
         except PdxToolsError as exc:
+            metrics.UPLOADS.labels(outcome="api_error").inc()
             logger.error("pdx.tools upload failed for %s: %s", attachment.filename, exc)
             await ctx.send(f"❌ pdx.tools відхилив завантаження: {exc}")
             return
@@ -101,10 +104,12 @@ class ToolsCog(commands.Cog):
             except discord.HTTPException:
                 logger.warning("Could not delete progress message", exc_info=True)
 
+        metrics.UPLOADS.labels(outcome="success").inc()
         try:
-            await asyncio.to_thread(record_upload, str(ctx.author.id), attachment.filename, url)
-        except sqlite3.Error:
+            await record_upload(str(ctx.author.id), attachment.filename, url)
+        except StorageError:
             # The upload succeeded; a bookkeeping failure must not hide that.
+            metrics.DB_ERRORS.labels(operation="upload").inc()
             logger.exception("Could not record upload of %s", attachment.filename)
 
         logger.info("uploaded %s for user %s -> %s", attachment.filename, ctx.author.id, url)
