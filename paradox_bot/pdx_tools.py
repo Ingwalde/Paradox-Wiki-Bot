@@ -46,7 +46,7 @@ def prepare_save_payload(raw: bytes) -> bytes:
     unpacks into another gzip stream, which is not a save file, and it was
     still sent as Content-Type: application/gzip.
     """
-    if raw.startswith(ZIP_MAGIC) or raw.startswith(GZIP_MAGIC):
+    if raw.startswith((ZIP_MAGIC, GZIP_MAGIC)):
         return raw
     return gzip.compress(raw)
 

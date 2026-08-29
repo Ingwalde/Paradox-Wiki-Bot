@@ -193,6 +193,9 @@ async def db_stats(game_key: str) -> dict[str, Any] | None:
             select(func.max(Pages.imported_at)).where(Pages.game_key == game_key)
         )
 
+    # pages > 0 guarantees at least one row, and imported_at is NOT NULL, so the
+    # MAX is a real timestamp -- the None arm only exists in the column's type.
+    assert modified is not None
     return {
         "pages": pages,
         "redirects": redirects,

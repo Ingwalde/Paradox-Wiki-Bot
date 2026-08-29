@@ -15,8 +15,8 @@ from __future__ import annotations
 import discord
 import pytest
 import pytest_asyncio
-
 from conftest import FakeContext, FakeSendable, insert_page
+
 from paradox_bot import search_context, search_flow, stats
 from paradox_bot.config import settings
 from paradox_bot.feedback import FEEDBACK_EMOJIS
