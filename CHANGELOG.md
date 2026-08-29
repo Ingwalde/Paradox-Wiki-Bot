@@ -51,6 +51,11 @@ All notable changes to this project will be documented in this file.
     `pg_dump`. Config gains `POSTGRES_*` / `DATABASE_URL`.
 
 ### Fixed
+- README's "Запуск" section rebuilt so the first commands actually work
+  post-migration: `docker compose up` is the primary path (brings up Postgres,
+  seeds a fresh volume, migrates), with host-run `python main.py` documented as
+  the dev path that needs a separate PostgreSQL. Also corrected the stale test
+  count (171 → 176).
 - `-tools` no longer gzips a save that is already compressed. `prepare_save_payload`
   recognised zip archives and passed them through, but everything else was
   gzipped unconditionally — so a `.gz` upload went to pdx.tools as a gzip stream

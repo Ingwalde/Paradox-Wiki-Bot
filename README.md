@@ -68,16 +68,38 @@ Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py 
 
 ## Запуск
 
+Єдина обов'язкова передумова — конфіг:
+
+```bash
+cp .env.example .env             # заповніть TOKEN (обов'язково)
+```
+
+`POSTGRES_PASSWORD` у прикладі вже має значення `change_me`, тож для локального
+запуску достатньо вписати `TOKEN` — компоуз не впаде на порожньому паролі.
+
+**Основний шлях — Docker.** Піднімає і PostgreSQL, і бота; на чистому томі сідує
+ігрові дані з `databases/seed.sql.gz` і застосовує Alembic-міграції. Більше
+нічого встановлювати не треба:
+
+```bash
+docker compose up
+```
+
+**Другий шлях — запуск із хоста (для розробки).** Потребує **окремо запущеного
+PostgreSQL** і заповненого `DATABASE_URL` (або `POSTGRES_*`) у `.env` — інакше
+`main.py` крутитиме ретраї підключення замість старту. Ігрових даних у
+репозиторії немає: базу треба засідувати з `databases/seed.sql.gz` або наповнити
+через `scripts/import_wiki.py` (див. розділ [Дані](#дані)).
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 pre-commit install               # опційно, але рекомендовано
-cp .env.example .env             # заповніть TOKEN (обов'язково)
 python main.py
 ```
 
-В консолі має з'явитися `Logged in as <ім'я бота>`. Далі в Discord: `-help`,
-потім `-eu4 holy roman empire`.
+Коли бот під'єднається, у консолі з'явиться `Logged in as <ім'я бота>`. Далі в
+Discord: `-help`, потім `-eu4 holy roman empire`.
 
 Бот піднімає keep-alive HTTP-ендпоінт на `PORT` (за замовчуванням 8080):
 `GET /` і `GET /health` повертають `200 I'm alive!`, коли БД відповідає, і
@@ -85,9 +107,8 @@ python main.py
 Prometheus (пошуки, порожні результати, голоси, аплоади, помилки БД, тривалість
 пошуку) на тому ж застосунку.
 
-Локально бот очікує доступний PostgreSQL (див. `.env.example`); найпростіше —
-`docker compose up`, який піднімає і базу, і бота. При старті бот чекає на базу
-(з ретраями) і застосовує Alembic-міграції (`alembic upgrade head`).
+При старті бот чекає на базу з ретраями (контейнер Postgres може бути ще не
+готовий) і застосовує Alembic-міграції (`alembic upgrade head`).
 
 ## Де взяти токени і ключі
 
@@ -224,7 +245,7 @@ mypy
 pytest -q --cov=paradox_bot --cov-report=term-missing
 ```
 
-171 тест: чисті функції (`search.py`, `pdx_tools.py`, `feedback.py`,
+176 тестів: чисті функції (`search.py`, `pdx_tools.py`, `feedback.py`,
 `stats.py`, `config.py`, `storage.py`), формат embed'ів і view, усі гілки
 команд у `cogs/`, і `-tools`-аплоад проти реального локального
 `aiohttp`-сервера (basic auth, заголовки, побайтова цілісність тіла).
