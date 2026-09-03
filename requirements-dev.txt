@@ -5,7 +5,7 @@ pytest-cov>=6.0,<7.0
 # and a range lets CI resolve a newer one than the hook runs. A lint release
 # that adds a check would then pass locally and fail in CI. Dependabot's
 # pre-commit and pip ecosystems bump both sides together.
-ruff==0.16.4
+ruff==0.16.5
 mypy==1.20.2
 pip-audit>=2.7,<3.0
 pre-commit>=4.0,<5.0
