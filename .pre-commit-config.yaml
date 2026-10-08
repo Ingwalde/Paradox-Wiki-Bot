@@ -9,7 +9,7 @@ repos:
 
   - repo: https://github.com/pre-commit/mirrors-mypy
     # Must match mypy in requirements-dev.txt exactly; see the note there.
-    rev: v1.20.2
+    rev: v2.4.0
     hooks:
       - id: mypy
         # The checked set lives in [tool.mypy] files in pyproject.toml. The
