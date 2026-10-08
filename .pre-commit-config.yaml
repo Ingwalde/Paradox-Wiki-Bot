@@ -20,7 +20,7 @@ repos:
         pass_filenames: false
         additional_dependencies:
           - discord.py>=2.4,<3.0
-          - aiohttp>=3.9,<4.0
+          - aiohttp>=3.14.4,<4.0
           - python-dotenv>=1.0,<2.0
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
