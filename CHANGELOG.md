@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- README monitoring docs: document that `/health` now also returns 503 when the
+  database is unreachable or the `pages` table is empty (unseeded volume), so an
+  UptimeRobot HTTP(s) monitor catches a bot that is up but has no working data —
+  and corrected the stale claim that the endpoint "does not read database
+  state". Added a NAT note (port-forward / tunnel needed for a home server).
+
+---
+
 ## [0.3.0] - 2026-08-28
 
 ### Added
