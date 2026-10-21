@@ -40,7 +40,7 @@ Discord (prefix + admin slash) → paradox_bot/bot.py → paradox_bot/search.py 
 | `search_context.py` | Памʼять «яке повідомлення було відповіддю на який запит» (для ✅/❌) |
 | `ui/` | Презентація: `views.py` (кнопки, пагінація, embed'и), `text.py` (українські рядки) |
 | `cogs/` | Cog-и для статичних команд: `tools`, `help`, `extras` (`-random`/`-trending`/факт дня), `admin` (slash) |
-| `web.py` | Keep-alive/health + `/metrics` HTTP-ендпоінти (aiohttp, у тому ж event loop); `/health` = 503, коли БД недоступна |
+| `web.py` | Keep-alive/health + `/metrics` HTTP-ендпоінти (aiohttp, у тому ж event loop); `/health` = 503, коли БД недоступна або дані не засіяні |
 | `storage.py` | Async-двигун SQLAlchemy, ORM-моделі, `StorageError`, `check_db`/`wait_for_db` |
 | `db_migrate.py` | Застосування Alembic-міграцій при старті бота |
 | `metrics.py` | Prometheus-лічильники й гістограма для `/metrics` |
@@ -102,8 +102,9 @@ python main.py
 Discord: `-help`, потім `-eu4 holy roman empire`.
 
 Бот піднімає keep-alive HTTP-ендпоінт на `PORT` (за замовчуванням 8080):
-`GET /` і `GET /health` повертають `200 I'm alive!`, коли БД відповідає, і
-`503`, коли дешевий `SELECT 1` не проходить. `GET /metrics` віддає метрики
+`GET /` і `GET /health` повертають `200 I'm alive!`, коли БД відповідає **і**
+ігрові дані засіяні, і `503` — коли дешевий `SELECT 1` не проходить або таблиця
+`pages` порожня (несідований том). `GET /metrics` віддає метрики
 Prometheus (пошуки, порожні результати, голоси, аплоади, помилки БД, тривалість
 пошуку) на тому ж застосунку.
 
@@ -404,9 +405,16 @@ loop (health-ендпоінт живе в тому ж циклі, що й бот
    канал → Integrations → Webhooks → Copy URL, і додати до URL `/slack`,
    інакше UptimeRobot шле формат, який Discord не приймає.
 4. Порт `8080` має бути відкритий у файрволі сервера (в Oracle Cloud це
-   і Security List інстансу, і локальний `iptables`/`ufw`).
+   і Security List інстансу, і локальний `iptables`/`ufw`). За NAT (домашня
+   машина) потрібен проброс порту на роутері або тунель (Cloudflare Tunnel,
+   Tailscale тощо) — інакше UptimeRobot до `/health` ззовні не достукається.
 
-Ендпоінт нічого не розкриває: віддає рядок `I'm alive!` і не читає стан бази.
+`/health` тепер перевіряє і стан бази: окрім живого event loop, він робить
+дешевий `SELECT 1` і впевнюється, що таблиця `pages` не порожня, і віддає `503`,
+якщо БД недосяжна або том не засіяний. Тобто UptimeRobot ловить не лише смерть
+процесу, а й «бот живий, але Postgres лежить / даних нема» — напівзламаний стан,
+який раніше виглядав здоровим. Нічого чутливого ендпоінт не розкриває: лише
+`I'm alive!` або короткий рядок причини.
 
 Повноцінні метрики (Prometheus + Grafana, як у `Find-Music-Bot`) — у
 [ROADMAP.md](ROADMAP.md), поки надлишкові для цього масштабу.
